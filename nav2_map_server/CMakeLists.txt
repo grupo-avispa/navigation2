@@ -17,6 +17,8 @@ find_package(nav2_util REQUIRED)
 find_package(GRAPHICSMAGICKCPP REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
+pkg_search_module(UUID REQUIRED uuid)
+
 nav2_package()
 
 include_directories(include)
@@ -29,6 +31,8 @@ set(map_saver_server_executable map_saver_server)
 
 set(costmap_filter_info_server_executable costmap_filter_info_server)
 
+set(vector_object_server_executable vector_object_server)
+
 add_executable(${map_server_executable}
   src/map_server/main.cpp)
 
@@ -40,6 +44,11 @@ add_executable(${map_saver_server_executable}
 
 add_executable(${costmap_filter_info_server_executable}
   src/costmap_filter_info/main.cpp)
+
+add_executable(${vector_object_server_executable}
+  src/vo_server/vector_object_shapes.cpp
+  src/vo_server/vector_object_server.cpp
+  src/vo_server/vector_object_server_node.cpp)
 
 set(map_io_library_name map_io)
 
@@ -77,6 +86,13 @@ set(map_saver_dependencies
   nav2_msgs
   nav2_util)
 
+set(vo_server_dependencies
+  rclcpp
+  rclcpp_lifecycle
+  nav_msgs
+  nav2_msgs
+  nav2_util)
+
 ament_target_dependencies(${map_server_executable}
   ${map_server_dependencies})
 
@@ -94,6 +110,10 @@ ament_target_dependencies(${library_name}
 
 ament_target_dependencies(${map_io_library_name}
   ${map_io_dependencies})
+
+ament_target_dependencies(${vector_object_server_executable}
+  ${vo_server_dependencies}
+)
 
 target_link_libraries(${library_name}
   ${map_io_library_name})
@@ -127,6 +147,10 @@ if(WIN32)
     YAML_CPP_DLL)
 endif()
 
+target_link_libraries(${vector_object_server_executable}
+  ${UUID_LIBRARIES}
+)
+
 rclcpp_components_register_nodes(${library_name} "nav2_map_server::CostmapFilterInfoServer")
 rclcpp_components_register_nodes(${library_name} "nav2_map_server::MapSaver")
 rclcpp_components_register_nodes(${library_name} "nav2_map_server::MapServer")
@@ -139,13 +163,14 @@ install(TARGETS
 
 install(TARGETS
     ${map_server_executable} ${map_saver_cli_executable} ${map_saver_server_executable}
-    ${costmap_filter_info_server_executable}
+    ${costmap_filter_info_server_executable} ${vector_object_server_executable}
   RUNTIME DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY include/
   DESTINATION include/)
 
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY params DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

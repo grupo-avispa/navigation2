@@ -22,8 +22,8 @@
 #include <QLabel>
 #include <rviz_common/display_context.hpp>
 
-// AUTO DOCKING
 #include "nav2_rviz_plugins/docking_panel.hpp"
+#include "nav2_rviz_plugins/utils.hpp"
 
 using namespace std::chrono_literals;
 
@@ -37,7 +37,9 @@ DockingPanel::DockingPanel(QWidget * parent)
   client_node_ = std::make_shared<rclcpp::Node>("nav2_rviz_docking_panel_node");
 
   main_layout_ = new QVBoxLayout;
-  info_layout_ = new QVBoxLayout;
+  dock_info_layout_ = new QHBoxLayout;
+  undock_info_layout_ = new QHBoxLayout;
+  feedback_layout_ = new QVBoxLayout;
   dock_id_layout_ = new QHBoxLayout;
   dock_type_layout_ = new QHBoxLayout;
   dock_type_ = new QComboBox;
@@ -46,6 +48,8 @@ DockingPanel::DockingPanel(QWidget * parent)
   docking_goal_status_indicator_ = new QLabel;
   undocking_goal_status_indicator_ = new QLabel;
   docking_feedback_indicator_ = new QLabel;
+  docking_result_indicator_ = new QLabel;
+  undocking_result_indicator_ = new QLabel;
   use_dock_id_checkbox_ = new QCheckBox;
   dock_id_ = new QLineEdit;
 
@@ -53,16 +57,18 @@ DockingPanel::DockingPanel(QWidget * parent)
   undocking_button_->setEnabled(false);
   dock_id_->setEnabled(false);
   use_dock_id_checkbox_->setEnabled(false);
-  docking_goal_status_indicator_->setText(getGoalStatusLabel("Docking"));
-  undocking_goal_status_indicator_->setText(getGoalStatusLabel("Undocking"));
+  docking_goal_status_indicator_->setText(nav2_rviz_plugins::getGoalStatusLabel("Docking"));
+  undocking_goal_status_indicator_->setText(nav2_rviz_plugins::getGoalStatusLabel("Undocking"));
   docking_feedback_indicator_->setText(getDockFeedbackLabel());
   docking_goal_status_indicator_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
   undocking_goal_status_indicator_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
   docking_feedback_indicator_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 
-  info_layout_->addWidget(docking_goal_status_indicator_);
-  info_layout_->addWidget(undocking_goal_status_indicator_);
-  info_layout_->addWidget(docking_feedback_indicator_);
+  dock_info_layout_->addWidget(docking_goal_status_indicator_);
+  dock_info_layout_->addWidget(docking_result_indicator_);
+  undock_info_layout_->addWidget(undocking_goal_status_indicator_);
+  undock_info_layout_->addWidget(undocking_result_indicator_);
+  feedback_layout_->addWidget(docking_feedback_indicator_);
   dock_id_layout_->addWidget(new QLabel("Dock id"));
   dock_id_layout_->addWidget(use_dock_id_checkbox_);
   dock_id_layout_->addWidget(dock_id_);
@@ -70,7 +76,9 @@ DockingPanel::DockingPanel(QWidget * parent)
   dock_type_layout_->addWidget(dock_type_);
 
   main_layout_->setContentsMargins(10, 10, 10, 10);
-  main_layout_->addLayout(info_layout_);
+  main_layout_->addLayout(dock_info_layout_);
+  main_layout_->addLayout(undock_info_layout_);
+  main_layout_->addLayout(feedback_layout_);
   main_layout_->addLayout(dock_id_layout_);
   main_layout_->addLayout(dock_type_layout_);
   main_layout_->addWidget(docking_button_);
@@ -119,7 +127,7 @@ void DockingPanel::onInitialize()
     rclcpp::SystemDefaultsQoS(),
     [this](const action_msgs::msg::GoalStatusArray::SharedPtr msg) {
       docking_goal_status_indicator_->setText(
-        getGoalStatusLabel("Docking", msg->status_list.back().status));
+        nav2_rviz_plugins::getGoalStatusLabel("Docking", msg->status_list.back().status));
       docking_button_->setText("Dock robot");
       docking_in_progress_ = false;
       // Reset values when action is completed
@@ -133,7 +141,7 @@ void DockingPanel::onInitialize()
     rclcpp::SystemDefaultsQoS(),
     [this](const action_msgs::msg::GoalStatusArray::SharedPtr msg) {
       undocking_goal_status_indicator_->setText(
-        getGoalStatusLabel("Undocking", msg->status_list.back().status));
+        nav2_rviz_plugins::getGoalStatusLabel("Undocking", msg->status_list.back().status));
       undocking_button_->setText("Undock robot");
       undocking_in_progress_ = false;
     });
@@ -193,8 +201,14 @@ void DockingPanel::startDocking()
 
   // Enable result awareness by providing an empty lambda function
   auto send_goal_options = rclcpp_action::Client<Dock>::SendGoalOptions();
-  send_goal_options.result_callback = [this](auto) {
+  send_goal_options.result_callback = [this](const DockGoalHandle::WrappedResult & result) {
       dock_goal_handle_.reset();
+      if (result.result->success) {
+        docking_result_indicator_->setText("");
+      } else {
+        docking_result_indicator_->setText(
+          QString(std::string("(" + dockErrorToString(result.result->error_code) + ")").c_str()));
+      }
     };
 
   auto future_goal_handle = dock_client_->async_send_goal(goal_msg, send_goal_options);
@@ -245,8 +259,14 @@ void DockingPanel::startUndocking()
 
   // Enable result awareness by providing an empty lambda function
   auto send_goal_options = rclcpp_action::Client<Undock>::SendGoalOptions();
-  send_goal_options.result_callback = [this](auto) {
+  send_goal_options.result_callback = [this](const UndockGoalHandle::WrappedResult & result) {
       undock_goal_handle_.reset();
+      if (result.result->success) {
+        undocking_result_indicator_->setText("");
+      } else {
+        undocking_result_indicator_->setText(
+          QString(std::string("(" + dockErrorToString(result.result->error_code) + ")").c_str()));
+      }
     };
 
   auto future_goal_handle = undock_client_->async_send_goal(goal_msg, send_goal_options);
@@ -312,7 +332,8 @@ void DockingPanel::timerEvent(QTimerEvent * event)
 {
   if (event->timerId() == timer_.timerId()) {
     if (!plugins_loaded_) {
-      pluginLoader(client_node_, "docking_server", "dock_plugins", dock_type_);
+      nav2_rviz_plugins::pluginLoader(
+        client_node_, server_failed_, "docking_server", "dock_plugins", dock_type_);
       plugins_loaded_ = true;
     }
 
@@ -334,83 +355,6 @@ void DockingPanel::timerEvent(QTimerEvent * event)
 
     timer_.stop();
   }
-}
-
-// Load the available plugins into the combo box
-void DockingPanel::pluginLoader(
-  rclcpp::Node::SharedPtr node, const std::string & server_name,
-  const std::string & plugin_type, QComboBox * combo_box)
-{
-  auto parameter_client = std::make_shared<rclcpp::SyncParametersClient>(node, server_name);
-
-  // Do not load the plugins if the combo box is already populated
-  if (combo_box->count() > 0) {
-    return;
-  }
-
-  // Wait for the service to be available before calling it
-  bool server_unavailable = false;
-  while (!parameter_client->wait_for_service(1s)) {
-    if (!rclcpp::ok()) {
-      RCLCPP_ERROR(node->get_logger(), "Interrupted while waiting for the service. Exiting.");
-      rclcpp::shutdown();
-    }
-    RCLCPP_INFO(
-      node->get_logger(),
-      "%s service not available", server_name.c_str());
-    server_unavailable = true;
-    server_failed_ = true;
-    break;
-  }
-
-  // Loading the plugins into the combo box
-  if (!plugins_loaded_) {
-    // If server unavaialble, let the combo box be empty
-    if (server_unavailable) {
-      return;
-    }
-    combo_box->addItem("Default");
-    auto parameters = parameter_client->get_parameters({plugin_type});
-    auto str_arr = parameters[0].as_string_array();
-    for (auto str : str_arr) {
-      combo_box->addItem(QString::fromStdString(str));
-    }
-    combo_box->setCurrentText("Default");
-  }
-}
-
-inline QString DockingPanel::getGoalStatusLabel(std::string title, int8_t status)
-{
-  std::string status_str;
-  switch (status) {
-    case action_msgs::msg::GoalStatus::STATUS_EXECUTING:
-      status_str = "<font color=green>active</color>";
-      break;
-
-    case action_msgs::msg::GoalStatus::STATUS_SUCCEEDED:
-      status_str = "<font color=green>reached</color>";
-      break;
-
-    case action_msgs::msg::GoalStatus::STATUS_CANCELED:
-      status_str = "<font color=orange>canceled</color>";
-      break;
-
-    case action_msgs::msg::GoalStatus::STATUS_ABORTED:
-      status_str = "<font color=red>aborted</color>";
-      break;
-
-    case action_msgs::msg::GoalStatus::STATUS_UNKNOWN:
-      status_str = "unknown";
-      break;
-
-    default:
-      status_str = "inactive";
-      break;
-  }
-  return QString(
-    std::string(
-      "<table><tr><td width=100><b>" + title + ":</b></td><td>" +
-      status_str + "</td></tr></table>").c_str());
 }
 
 inline QString DockingPanel::getDockFeedbackLabel(Dock::Feedback msg)
@@ -456,6 +400,29 @@ inline std::string DockingPanel::dockStateToString(int16_t state)
       return "retry";
     default:
       return "none";
+  }
+}
+
+inline std::string DockingPanel::dockErrorToString(int16_t error_code)
+{
+  switch (error_code) {
+    case 0:
+      return "none";
+    case 901:
+      return "dock not in database";
+    case 902:
+      return "dock not valid";
+    case 903:
+      return "failed to stage";
+    case 904:
+      return "failed to detect dock";
+    case 905:
+      return "failed to control";
+    case 906:
+      return "failed to charge";
+    case 999:
+    default:
+      return "unknown";
   }
 }
 

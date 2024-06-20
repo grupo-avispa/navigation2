@@ -55,7 +55,6 @@ private:
   using DockGoalHandle = rclcpp_action::ClientGoalHandle<Dock>;
   using UndockGoalHandle = rclcpp_action::ClientGoalHandle<Undock>;
 
-
   // Start the actions
   void startDocking();
   void startUndocking();
@@ -67,22 +66,6 @@ private:
   // The (non-spinning) client node used to invoke the action client
   void timerEvent(QTimerEvent * event) override;
 
-  /**
-   * @brief Load the avaialble plugins into the combo box
-   * @param node The node to use for loading the plugins
-   * @param server_name The name of the server to load plugins for
-   * @param plugin_type The type of plugin to load
-   * @param combo_box The combo box to add the loaded plugins to
-   */
-  void pluginLoader(
-    rclcpp::Node::SharedPtr node, const std::string & server_name,
-    const std::string & plugin_type, QComboBox * combo_box);
-
-  // Create label string from goal status msg
-  static inline QString getGoalStatusLabel(
-    std::string title,
-    int8_t status = action_msgs::msg::GoalStatus::STATUS_UNKNOWN);
-
   // Create label string from feedback msg
   static inline QString getDockFeedbackLabel(Dock::Feedback msg = Dock::Feedback());
 
@@ -93,7 +76,9 @@ private:
   // Round off double to the specified precision and convert to string
   static inline std::string toString(double val, int precision = 0);
 
+  // Convert the dock state and error code to string
   static inline std::string dockStateToString(int16_t state);
+  static inline std::string dockErrorToString(int16_t error_code);
 
   // The (non-spinning) client node used to invoke the action client
   rclcpp::Node::SharedPtr client_node_;
@@ -107,7 +92,9 @@ private:
   QBasicTimer timer_;
 
   QVBoxLayout * main_layout_{nullptr};
-  QVBoxLayout * info_layout_{nullptr};
+  QHBoxLayout * dock_info_layout_{nullptr};
+  QHBoxLayout * undock_info_layout_{nullptr};
+  QVBoxLayout * feedback_layout_{nullptr};
   QHBoxLayout * dock_id_layout_{nullptr};
   QHBoxLayout * dock_type_layout_{nullptr};
 
@@ -119,6 +106,8 @@ private:
   QLabel * docking_goal_status_indicator_{nullptr};
   QLabel * undocking_goal_status_indicator_{nullptr};
   QLabel * docking_feedback_indicator_{nullptr};
+  QLabel * docking_result_indicator_{nullptr};
+  QLabel * undocking_result_indicator_{nullptr};
 
   QLineEdit * dock_id_{nullptr};
 

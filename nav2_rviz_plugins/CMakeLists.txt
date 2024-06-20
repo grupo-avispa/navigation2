@@ -32,8 +32,10 @@ find_package(std_msgs REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(yaml_cpp_vendor REQUIRED)
+find_package(opennav_docking_msgs REQUIRED)
 
 set(nav2_rviz_plugins_headers_to_moc
+  include/nav2_rviz_plugins/docking_panel.hpp
   include/nav2_rviz_plugins/goal_pose_updater.hpp
   include/nav2_rviz_plugins/goal_common.hpp
   include/nav2_rviz_plugins/goal_tool.hpp
@@ -50,6 +52,7 @@ include_directories(
 set(library_name ${PROJECT_NAME})
 
 add_library(${library_name} SHARED
+  src/docking_panel.cpp
   src/goal_tool.cpp
   src/nav2_panel.cpp
   src/selector.cpp
@@ -75,6 +78,7 @@ set(dependencies
   std_msgs
   tf2_geometry_msgs
   yaml_cpp_vendor
+  opennav_docking_msgs
 )
 
 ament_target_dependencies(${library_name}
@@ -109,6 +113,11 @@ install(
 install(
   DIRECTORY include/
   DESTINATION include/
+)
+
+install(
+  DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/icons"
+  DESTINATION "share/${PROJECT_NAME}"
 )
 
 if(BUILD_TESTING)

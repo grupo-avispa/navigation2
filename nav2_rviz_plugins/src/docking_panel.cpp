@@ -121,6 +121,7 @@ void DockingPanel::onInitialize()
       docking_goal_status_indicator_->setText(
         nav2_rviz_plugins::getGoalStatusLabel("Feedback", msg->status_list.back().status));
       docking_button_->setText("Dock robot");
+      undocking_button_->setEnabled(true);
       docking_in_progress_ = false;
       // Reset values when action is completed
       if (msg->status_list.back().status == action_msgs::msg::GoalStatus::STATUS_SUCCEEDED) {
@@ -134,6 +135,7 @@ void DockingPanel::onInitialize()
     [this](const action_msgs::msg::GoalStatusArray::SharedPtr msg) {
       docking_goal_status_indicator_->setText(
         nav2_rviz_plugins::getGoalStatusLabel("Feedback", msg->status_list.back().status));
+      docking_button_->setEnabled(true);
       undocking_button_->setText("Undock robot");
       undocking_in_progress_ = false;
     });

@@ -288,10 +288,9 @@ TEST(FollowingServerTests, DynamicParams)
     {rclcpp::Parameter("controller_frequency", 1.0),
       rclcpp::Parameter("initial_perception_timeout", 2.0),
       rclcpp::Parameter("detection_timeout", 3.0),
-      rclcpp::Parameter("transform_tolerance", 4.0),
-      rclcpp::Parameter("desired_distance", 5.0),
-      rclcpp::Parameter("linear_tolerance", 6.0),
-      rclcpp::Parameter("angular_tolerance", 7.0),
+      rclcpp::Parameter("desired_distance", 4.0),
+      rclcpp::Parameter("linear_tolerance", 5.0),
+      rclcpp::Parameter("angular_tolerance", 6.0),
       rclcpp::Parameter("base_frame", std::string("test_base_frame")),
       rclcpp::Parameter("fixed_frame", std::string("test_fixed_frame")),
       rclcpp::Parameter("skip_orientation", false)});
@@ -303,10 +302,9 @@ TEST(FollowingServerTests, DynamicParams)
   EXPECT_EQ(node->get_parameter("controller_frequency").as_double(), 1.0);
   EXPECT_EQ(node->get_parameter("initial_perception_timeout").as_double(), 2.0);
   EXPECT_EQ(node->get_parameter("detection_timeout").as_double(), 3.0);
-  EXPECT_EQ(node->get_parameter("transform_tolerance").as_double(), 4.0);
-  EXPECT_EQ(node->get_parameter("desired_distance").as_double(), 5.0);
-  EXPECT_EQ(node->get_parameter("linear_tolerance").as_double(), 6.0);
-  EXPECT_EQ(node->get_parameter("angular_tolerance").as_double(), 7.0);
+  EXPECT_EQ(node->get_parameter("desired_distance").as_double(), 4.0);
+  EXPECT_EQ(node->get_parameter("linear_tolerance").as_double(), 5.0);
+  EXPECT_EQ(node->get_parameter("angular_tolerance").as_double(), 6.0);
   EXPECT_EQ(node->get_parameter("base_frame").as_string(), "test_base_frame");
   EXPECT_EQ(node->get_parameter("fixed_frame").as_string(), "test_fixed_frame");
   EXPECT_EQ(node->get_parameter("skip_orientation").as_bool(), false);

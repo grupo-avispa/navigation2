@@ -35,7 +35,6 @@ FollowingServer::FollowingServer(const rclcpp::NodeOptions & options)
   declare_parameter("controller_frequency", 50.0);
   declare_parameter("initial_perception_timeout", 5.0);
   declare_parameter("detection_timeout", 2.0);
-  declare_parameter("transform_tolerance", 0.2);
   declare_parameter("linear_tolerance", 0.15);
   declare_parameter("angular_tolerance", 0.15);
   declare_parameter("base_frame", "base_link");
@@ -55,7 +54,6 @@ FollowingServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
   get_parameter("controller_frequency", controller_frequency_);
   get_parameter("initial_perception_timeout", initial_perception_timeout_);
   get_parameter("detection_timeout", detection_timeout_);
-  get_parameter("transform_tolerance", transform_tolerance_);
   get_parameter("linear_tolerance", linear_tolerance_);
   get_parameter("angular_tolerance", angular_tolerance_);
   get_parameter("base_frame", base_frame_);
@@ -494,8 +492,6 @@ FollowingServer::dynamicParametersCallback(std::vector<rclcpp::Parameter> parame
         initial_perception_timeout_ = parameter.as_double();
       } else if (name == "detection_timeout") {
         detection_timeout_ = parameter.as_double();
-      } else if (name == "transform_tolerance") {
-        transform_tolerance_ = parameter.as_double();
       } else if (name == "linear_tolerance") {
         linear_tolerance_ = parameter.as_double();
       } else if (name == "angular_tolerance") {

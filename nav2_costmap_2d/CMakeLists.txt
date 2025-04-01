@@ -43,8 +43,8 @@ add_library(nav2_costmap_2d_core SHARED
 )
 target_include_directories(nav2_costmap_2d_core
   PUBLIC
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-    "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>"
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+  "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>"
 )
 target_link_libraries(nav2_costmap_2d_core PUBLIC
   ${geometry_msgs_TARGETS}
@@ -68,11 +68,12 @@ add_library(layers SHARED
   plugins/range_sensor_layer.cpp
   plugins/denoise_layer.cpp
   plugins/plugin_container_layer.cpp
+  plugins/social_layer.cpp
 )
 target_include_directories(layers
   PUBLIC
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-    "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>"
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+  "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>"
 )
 target_link_libraries(layers PUBLIC
   angles::angles
@@ -94,8 +95,8 @@ add_library(filters SHARED
 )
 target_include_directories(filters
   PUBLIC
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-    "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>"
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+  "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>"
 )
 target_link_libraries(filters PUBLIC
   nav2_costmap_2d_core
@@ -110,8 +111,8 @@ add_library(nav2_costmap_2d_client SHARED
 )
 target_include_directories(nav2_costmap_2d_client
   PUBLIC
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-    "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>"
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+  "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>"
 )
 target_link_libraries(nav2_costmap_2d_client PUBLIC
   nav2_costmap_2d_core
@@ -169,6 +170,7 @@ install(DIRECTORY include/
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
+
   # the following line skips the linter which checks for copyrights
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)

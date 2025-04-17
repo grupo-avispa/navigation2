@@ -38,11 +38,9 @@ protected:
     exporter.addConverter<geometry_msgs::msg::Quaternion>();
     exporter.addConverter<geometry_msgs::msg::Pose>();
     exporter.addConverter<geometry_msgs::msg::PoseStamped>();
-    exporter.addConverter<std::vector<geometry_msgs::msg::PoseStamped>>();
     exporter.addConverter<nav_msgs::msg::Goals>();
     exporter.addConverter<nav_msgs::msg::Path>();
     exporter.addConverter<nav2_msgs::msg::WaypointStatus>();
-    exporter.addConverter<std::vector<nav2_msgs::msg::WaypointStatus>>();
   }
 };
 
@@ -393,108 +391,48 @@ TEST_F(JsonTest, test_pose_stamped_vector)
   ASSERT_EQ(json["poses"][1]["pose"]["orientation"]["w"], 18.0);
 
   // Check the two-ways transform, i.e. "from_json"
-  // auto pose_stamped_vector_test2 =
-  //   exporter.fromJson(json["poses"])->first.cast<std::vector<geometry_msgs::msg::PoseStamped>>();
-  // ASSERT_EQ(pose_stamped_vector_test[0].header.stamp.sec,
-  //   pose_stamped_vector_test2[0].header.stamp.sec);
-  // ASSERT_EQ(pose_stamped_vector_test[0].header.stamp.nanosec,
-  //   pose_stamped_vector_test2[0].header.stamp.nanosec);
-  // ASSERT_EQ(pose_stamped_vector_test[0].header.frame_id,
-  //   pose_stamped_vector_test2[0].header.frame_id);
-  // ASSERT_EQ(pose_stamped_vector_test[0].pose.position.x,
-  //   pose_stamped_vector_test2[0].pose.position.x);
-  // ASSERT_EQ(pose_stamped_vector_test[0].pose.position.y,
-  //   pose_stamped_vector_test2[0].pose.position.y);
-  // ASSERT_EQ(pose_stamped_vector_test[0].pose.position.z,
-  //   pose_stamped_vector_test2[0].pose.position.z);
-  // ASSERT_EQ(pose_stamped_vector_test[0].pose.orientation.x,
-  //   pose_stamped_vector_test2[0].pose.orientation.x);
-  // ASSERT_EQ(pose_stamped_vector_test[0].pose.orientation.y,
-  //   pose_stamped_vector_test2[0].pose.orientation.y);
-  // ASSERT_EQ(pose_stamped_vector_test[0].pose.orientation.z,
-  //   pose_stamped_vector_test2[0].pose.orientation.z);
-  // ASSERT_EQ(pose_stamped_vector_test[0].pose.orientation.w,
-  //   pose_stamped_vector_test2[0].pose.orientation.w);
-  // ASSERT_EQ(pose_stamped_vector_test[1].header.stamp.sec,
-  //   pose_stamped_vector_test2[1].header.stamp.sec);
-  // ASSERT_EQ(pose_stamped_vector_test[1].header.stamp.nanosec,
-  //   pose_stamped_vector_test2[1].header.stamp.nanosec);
-  // ASSERT_EQ(pose_stamped_vector_test[1].header.frame_id,
-  //   pose_stamped_vector_test2[1].header.frame_id);
-  // ASSERT_EQ(pose_stamped_vector_test[1].pose.position.x,
-  //   pose_stamped_vector_test2[1].pose.position.x);
-  // ASSERT_EQ(pose_stamped_vector_test[1].pose.position.y,
-  //   pose_stamped_vector_test2[1].pose.position.y);
-  // ASSERT_EQ(pose_stamped_vector_test[1].pose.position.z,
-  //   pose_stamped_vector_test2[1].pose.position.z);
-  // ASSERT_EQ(pose_stamped_vector_test[1].pose.orientation.x,
-  //   pose_stamped_vector_test2[1].pose.orientation.x);
-  // ASSERT_EQ(pose_stamped_vector_test[1].pose.orientation.y,
-  //   pose_stamped_vector_test2[1].pose.orientation.y);
-  // ASSERT_EQ(pose_stamped_vector_test[1].pose.orientation.z,
-  //   pose_stamped_vector_test2[1].pose.orientation.z);
-  // ASSERT_EQ(pose_stamped_vector_test[1].pose.orientation.w,
-  //   pose_stamped_vector_test2[1].pose.orientation.w);
-
-  // // Convert from string
-  // std::vector<geometry_msgs::msg::PoseStamped> pose_stamped_vector_test3;
-  // auto const test_json =
-  //   R"(json:
-  //     {
-  //       "poses": [
-  //         {
-  //           "__type": "geometry_msgs::msg::PoseStamped",
-  //           "header": {
-  //             "__type": "std_msgs::msg::Header",
-  //             "stamp": {"__type": "builtin_interfaces::msg::Time", "sec": 1, "nanosec": 2},
-  //             "frame_id": "map"
-  //           },
-  //           "pose": {
-  //             "__type": "geometry_msgs::msg::Pose",
-  //             "position": {
-  //               "__type": "geometry_msgs::msg::Point",
-  //               "x": 3.0, "y": 4.0, "z": 5.0
-  //             },
-  //             "orientation": {
-  //               "__type": "geometry_msgs::msg::Quaternion",
-  //               "x": 6.0, "y": 7.0, "z": 8.0, "w": 9.0
-  //             }
-  //           }
-  //         },
-  //         {
-  //           "__type": "geometry_msgs::msg::PoseStamped",
-  //           "header": {
-  //             "__type": "std_msgs::msg::Header",
-  //             "stamp": {"__type": "builtin_interfaces::msg::Time", "sec": 10, "nanosec": 11},
-  //             "frame_id": "odom"
-  //           },
-  //           "pose": {
-  //             "__type": "geometry_msgs::msg::Pose",
-  //             "position": {
-  //               "__type": "geometry_msgs::msg::Point",
-  //               "x": 12.0, "y": 13.0, "z": 14.0
-  //             },
-  //             "orientation": {
-  //               "__type": "geometry_msgs::msg::Quaternion",
-  //               "x": 15.0, "y": 16.0, "z": 17.0, "w": 18.0
-  //             }
-  //           }
-  //         }
-  //       ]
-  //     }
-  //   )";
-  // ASSERT_NO_THROW(pose_stamped_vector_test3 =
-  //   BT::convertFromString<std::vector<geometry_msgs::msg::PoseStamped>>(test_json));
-  // ASSERT_EQ(pose_stamped_vector_test[0].header, pose_stamped_vector_test3[0].header);
-  // ASSERT_EQ(pose_stamped_vector_test[0].pose.position,
-  //   pose_stamped_vector_test3[0].pose.position);
-  // ASSERT_EQ(pose_stamped_vector_test[0].pose.orientation,
-  //   pose_stamped_vector_test3[0].pose.orientation);
-  // ASSERT_EQ(pose_stamped_vector_test[1].header, pose_stamped_vector_test3[1].header);
-  // ASSERT_EQ(pose_stamped_vector_test[1].pose.position,
-  //   pose_stamped_vector_test3[1].pose.position);
-  // ASSERT_EQ(pose_stamped_vector_test[1].pose.orientation,
-  //   pose_stamped_vector_test3[1].pose.orientation);
+  auto pose_stamped_vector_test2 =
+    exporter.fromJson(json["poses"])->first.cast<std::vector<geometry_msgs::msg::PoseStamped>>();
+  ASSERT_EQ(pose_stamped_vector_test[0].header.stamp.sec,
+    pose_stamped_vector_test2[0].header.stamp.sec);
+  ASSERT_EQ(pose_stamped_vector_test[0].header.stamp.nanosec,
+    pose_stamped_vector_test2[0].header.stamp.nanosec);
+  ASSERT_EQ(pose_stamped_vector_test[0].header.frame_id,
+    pose_stamped_vector_test2[0].header.frame_id);
+  ASSERT_EQ(pose_stamped_vector_test[0].pose.position.x,
+    pose_stamped_vector_test2[0].pose.position.x);
+  ASSERT_EQ(pose_stamped_vector_test[0].pose.position.y,
+    pose_stamped_vector_test2[0].pose.position.y);
+  ASSERT_EQ(pose_stamped_vector_test[0].pose.position.z,
+    pose_stamped_vector_test2[0].pose.position.z);
+  ASSERT_EQ(pose_stamped_vector_test[0].pose.orientation.x,
+    pose_stamped_vector_test2[0].pose.orientation.x);
+  ASSERT_EQ(pose_stamped_vector_test[0].pose.orientation.y,
+    pose_stamped_vector_test2[0].pose.orientation.y);
+  ASSERT_EQ(pose_stamped_vector_test[0].pose.orientation.z,
+    pose_stamped_vector_test2[0].pose.orientation.z);
+  ASSERT_EQ(pose_stamped_vector_test[0].pose.orientation.w,
+    pose_stamped_vector_test2[0].pose.orientation.w);
+  ASSERT_EQ(pose_stamped_vector_test[1].header.stamp.sec,
+    pose_stamped_vector_test2[1].header.stamp.sec);
+  ASSERT_EQ(pose_stamped_vector_test[1].header.stamp.nanosec,
+    pose_stamped_vector_test2[1].header.stamp.nanosec);
+  ASSERT_EQ(pose_stamped_vector_test[1].header.frame_id,
+    pose_stamped_vector_test2[1].header.frame_id);
+  ASSERT_EQ(pose_stamped_vector_test[1].pose.position.x,
+    pose_stamped_vector_test2[1].pose.position.x);
+  ASSERT_EQ(pose_stamped_vector_test[1].pose.position.y,
+    pose_stamped_vector_test2[1].pose.position.y);
+  ASSERT_EQ(pose_stamped_vector_test[1].pose.position.z,
+    pose_stamped_vector_test2[1].pose.position.z);
+  ASSERT_EQ(pose_stamped_vector_test[1].pose.orientation.x,
+    pose_stamped_vector_test2[1].pose.orientation.x);
+  ASSERT_EQ(pose_stamped_vector_test[1].pose.orientation.y,
+    pose_stamped_vector_test2[1].pose.orientation.y);
+  ASSERT_EQ(pose_stamped_vector_test[1].pose.orientation.z,
+    pose_stamped_vector_test2[1].pose.orientation.z);
+  ASSERT_EQ(pose_stamped_vector_test[1].pose.orientation.w,
+    pose_stamped_vector_test2[1].pose.orientation.w);
 }
 
 TEST_F(JsonTest, test_goals)
@@ -1051,6 +989,30 @@ TEST_F(JsonTest, test_waypoint_status_vector)
   ASSERT_EQ(json["waypoint_status_vector"][1]["error_msg"], "error2");
 
   // Check the two-ways transform, i.e. "from_json"
-  // auto waypoint_status_vector_test2 =
-  //   exporter.fromJson(json["waypoint_status_vector"])->first.cast<std::vector<nav2_msgs::msg::WaypointStatus>>();
+  auto waypoint_status_vector_test2 =
+    exporter.fromJson(json["waypoint_status_vector"])->first.cast<std::vector<nav2_msgs::msg::WaypointStatus>>(); // NOLINT
+  ASSERT_EQ(waypoint_status_vector_test[0].waypoint_status,
+    waypoint_status_vector_test2[0].waypoint_status);
+  ASSERT_EQ(waypoint_status_vector_test[0].waypoint_index,
+    waypoint_status_vector_test2[0].waypoint_index);
+  ASSERT_EQ(waypoint_status_vector_test[0].waypoint_pose.header,
+    waypoint_status_vector_test2[0].waypoint_pose.header);
+  ASSERT_EQ(waypoint_status_vector_test[0].waypoint_pose.pose,
+    waypoint_status_vector_test2[0].waypoint_pose.pose);
+  ASSERT_EQ(waypoint_status_vector_test[0].error_code,
+    waypoint_status_vector_test2[0].error_code);
+  ASSERT_EQ(waypoint_status_vector_test[0].error_msg,
+    waypoint_status_vector_test2[0].error_msg);
+  ASSERT_EQ(waypoint_status_vector_test[1].waypoint_status,
+    waypoint_status_vector_test2[1].waypoint_status);
+  ASSERT_EQ(waypoint_status_vector_test[1].waypoint_index,
+    waypoint_status_vector_test2[1].waypoint_index);
+  ASSERT_EQ(waypoint_status_vector_test[1].waypoint_pose.header,
+    waypoint_status_vector_test2[1].waypoint_pose.header);
+  ASSERT_EQ(waypoint_status_vector_test[1].waypoint_pose.pose,
+    waypoint_status_vector_test2[1].waypoint_pose.pose);
+  ASSERT_EQ(waypoint_status_vector_test[1].error_code,
+    waypoint_status_vector_test2[1].error_code);
+  ASSERT_EQ(waypoint_status_vector_test[1].error_msg,
+    waypoint_status_vector_test2[1].error_msg);
 }

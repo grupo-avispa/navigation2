@@ -39,11 +39,13 @@ protected:
     goal_handle)
   override
   {
-    const auto goal = goal_handle->get_goal();
-    auto result =
-      std::make_shared<nav2_msgs::action::UndockRobot::Result>();
-    result->success = true;
-    goal_handle->succeed(result);
+    auto result = std::make_shared<nav2_msgs::action::UndockRobot::Result>();
+    bool return_success = getReturnSuccess();
+    if (return_success) {
+      goal_handle->succeed(result);
+    } else {
+      goal_handle->abort(result);
+    }
   }
 };
 
@@ -115,12 +117,38 @@ BT::NodeConfiguration * UndockRobotActionTestFixture::config_ = nullptr;
 std::shared_ptr<BT::BehaviorTreeFactory> UndockRobotActionTestFixture::factory_ = nullptr;
 std::shared_ptr<BT::Tree> UndockRobotActionTestFixture::tree_ = nullptr;
 
+TEST_F(UndockRobotActionTestFixture, test_ports)
+{
+  std::string xml_txt =
+    R"(
+      <root BTCPP_format="4">
+        <BehaviorTree ID="MainTree">
+            <UndockRobot />
+        </BehaviorTree>
+      </root>)";
+
+  tree_ = std::make_shared<BT::Tree>(factory_->createTreeFromText(xml_txt, config_->blackboard));
+  EXPECT_EQ(tree_->rootNode()->getInput<float>("max_undocking_time"), 30.0);
+
+  xml_txt =
+    R"(
+      <root BTCPP_format="4">
+        <BehaviorTree ID="MainTree">
+            <UndockRobot dock_type="dock1" max_undocking_time="20.0"/>
+        </BehaviorTree>
+      </root>)";
+
+  tree_ = std::make_shared<BT::Tree>(factory_->createTreeFromText(xml_txt, config_->blackboard));
+  EXPECT_EQ(tree_->rootNode()->getInput<std::string>("dock_type"), "dock1");
+  EXPECT_EQ(tree_->rootNode()->getInput<float>("max_undocking_time"), 20.0);
+}
+
 TEST_F(UndockRobotActionTestFixture, test_tick)
 {
   // create tree
   std::string xml_txt =
     R"(
-      <root main_tree_to_execute = "MainTree" >
+      <root BTCPP_format="4">
         <BehaviorTree ID="MainTree">
             <UndockRobot dock_type="dock1"/>
         </BehaviorTree>
@@ -139,6 +167,28 @@ TEST_F(UndockRobotActionTestFixture, test_tick)
   // halt node so another goal can be sent
   tree_->haltTree();
   EXPECT_EQ(tree_->rootNode()->status(), BT::NodeStatus::IDLE);
+}
+
+TEST_F(UndockRobotActionTestFixture, test_failure)
+{
+  std::string xml_txt =
+    R"(
+      <root BTCPP_format="4">
+        <BehaviorTree ID="MainTree">
+            <UndockRobot dock_type="dock1"/>
+        </BehaviorTree>
+      </root>)";
+
+  tree_ = std::make_shared<BT::Tree>(factory_->createTreeFromText(xml_txt, config_->blackboard));
+  action_server_->setReturnSuccess(false);
+
+  while (tree_->rootNode()->status() != BT::NodeStatus::SUCCESS &&
+    tree_->rootNode()->status() != BT::NodeStatus::FAILURE)
+  {
+    tree_->rootNode()->executeTick();
+  }
+
+  EXPECT_EQ(tree_->rootNode()->status(), BT::NodeStatus::FAILURE);
 }
 
 int main(int argc, char ** argv)

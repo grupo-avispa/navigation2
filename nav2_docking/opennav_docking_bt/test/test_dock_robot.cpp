@@ -39,11 +39,13 @@ protected:
     goal_handle)
   override
   {
-    const auto goal = goal_handle->get_goal();
-    auto result =
-      std::make_shared<nav2_msgs::action::DockRobot::Result>();
-    result->success = true;
-    goal_handle->succeed(result);
+    auto result = std::make_shared<nav2_msgs::action::DockRobot::Result>();
+    bool return_success = getReturnSuccess();
+    if (return_success) {
+      goal_handle->succeed(result);
+    } else {
+      goal_handle->abort(result);
+    }
   }
 };
 
@@ -115,14 +117,59 @@ BT::NodeConfiguration * DockRobotActionTestFixture::config_ = nullptr;
 std::shared_ptr<BT::BehaviorTreeFactory> DockRobotActionTestFixture::factory_ = nullptr;
 std::shared_ptr<BT::Tree> DockRobotActionTestFixture::tree_ = nullptr;
 
+TEST_F(DockRobotActionTestFixture, test_ports)
+{
+  std::string xml_txt =
+    R"(
+      <root BTCPP_format="4">
+        <BehaviorTree ID="MainTree">
+            <DockRobot />
+        </BehaviorTree>
+      </root>)";
+
+  tree_ = std::make_shared<BT::Tree>(factory_->createTreeFromText(xml_txt, config_->blackboard));
+  EXPECT_EQ(tree_->rootNode()->getInput<bool>("use_dock_id"), true);
+  EXPECT_EQ(tree_->rootNode()->getInput<float>("max_staging_time"), 1000.0);
+  EXPECT_EQ(tree_->rootNode()->getInput<bool>("navigate_to_staging_pose"), true);
+
+  xml_txt =
+    R"(
+      <root BTCPP_format="4">
+        <BehaviorTree ID="MainTree">
+            <DockRobot use_dock_id="false" dock_id="test_dock" dock_pose="0;map;1.0;2.0;3.0;4.0;5.0;6.0;7.0"
+            dock_type="dock1" max_staging_time="20.0" navigate_to_staging_pose="false"/>
+        </BehaviorTree>
+      </root>)";
+
+  tree_ = std::make_shared<BT::Tree>(factory_->createTreeFromText(xml_txt, config_->blackboard));
+  EXPECT_EQ(tree_->rootNode()->getInput<bool>("use_dock_id"), false);
+  EXPECT_EQ(tree_->rootNode()->getInput<std::string>("dock_id"), "test_dock");
+  EXPECT_EQ(tree_->rootNode()->getInput<std::string>("dock_type"), "dock1");
+  EXPECT_EQ(tree_->rootNode()->getInput<float>("max_staging_time"), 20.0);
+  EXPECT_EQ(tree_->rootNode()->getInput<bool>("navigate_to_staging_pose"), false);
+
+  std::vector<geometry_msgs::msg::PoseStamped> values;
+  tree_->rootNode()->getInput("dock_pose", values);
+  EXPECT_EQ(rclcpp::Time(values[0].header.stamp).nanoseconds(), 0);
+  EXPECT_EQ(values[0].header.frame_id, "map");
+  EXPECT_EQ(values[0].pose.position.x, 1.0);
+  EXPECT_EQ(values[0].pose.position.y, 2.0);
+  EXPECT_EQ(values[0].pose.position.z, 3.0);
+  EXPECT_EQ(values[0].pose.orientation.x, 4.0);
+  EXPECT_EQ(values[0].pose.orientation.y, 5.0);
+  EXPECT_EQ(values[0].pose.orientation.z, 6.0);
+  EXPECT_EQ(values[0].pose.orientation.w, 7.0);
+}
+
 TEST_F(DockRobotActionTestFixture, test_tick)
 {
   // create tree
   std::string xml_txt =
     R"(
-      <root main_tree_to_execute = "MainTree" >
+      <root BTCPP_format="4">
         <BehaviorTree ID="MainTree">
-            <DockRobot use_dock_id="true" dock_id="dock1"/>
+            <DockRobot use_dock_id="true" dock_id="dock1" success="{success}"
+              num_retries="{num_retries}" error_code_id="{error_code_id}" error_msg="{error_msg}" />
         </BehaviorTree>
       </root>)";
 
@@ -135,6 +182,10 @@ TEST_F(DockRobotActionTestFixture, test_tick)
 
   // the goal should have reached our server
   EXPECT_EQ(tree_->rootNode()->status(), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(config_->blackboard->get<bool>("success"), true);
+  EXPECT_EQ(config_->blackboard->get<int>("num_retries"), 0);
+  EXPECT_EQ(config_->blackboard->get<int>("error_code_id"), 0);
+  EXPECT_EQ(config_->blackboard->get<std::string>("error_msg"), "");
 
   // halt node so another goal can be sent
   tree_->haltTree();
@@ -146,7 +197,7 @@ TEST_F(DockRobotActionTestFixture, test_tick2)
   // create tree
   std::string xml_txt =
     R"(
-      <root main_tree_to_execute = "MainTree" >
+      <root BTCPP_format="4">
         <BehaviorTree ID="MainTree">
             <DockRobot use_dock_id="false" dock_type="dock1"/>
         </BehaviorTree>
@@ -165,6 +216,28 @@ TEST_F(DockRobotActionTestFixture, test_tick2)
   // halt node so another goal can be sent
   tree_->haltTree();
   EXPECT_EQ(tree_->rootNode()->status(), BT::NodeStatus::IDLE);
+}
+
+TEST_F(DockRobotActionTestFixture, test_failure)
+{
+  std::string xml_txt =
+    R"(
+      <root BTCPP_format="4">
+        <BehaviorTree ID="MainTree">
+            <DockRobot use_dock_id="false" dock_type="dock1"/>
+        </BehaviorTree>
+      </root>)";
+
+  tree_ = std::make_shared<BT::Tree>(factory_->createTreeFromText(xml_txt, config_->blackboard));
+  action_server_->setReturnSuccess(false);
+
+  while (tree_->rootNode()->status() != BT::NodeStatus::SUCCESS &&
+    tree_->rootNode()->status() != BT::NodeStatus::FAILURE)
+  {
+    tree_->rootNode()->executeTick();
+  }
+
+  EXPECT_EQ(tree_->rootNode()->status(), BT::NodeStatus::FAILURE);
 }
 
 int main(int argc, char ** argv)

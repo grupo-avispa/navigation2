@@ -44,7 +44,7 @@ from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import ComputePathToPose, ComputePathThroughPoses
 from nav_msgs.msg import Path
 
-from nav2_planner_py.core.planner_exceptions import (  # noqa: F401 (re-exported)
+from nav2_core_py.planner_exceptions import (  # noqa: F401 (re-exported)
     PlannerException,
     InvalidPlanner,
     StartOccupied,
@@ -59,8 +59,8 @@ from nav2_planner_py.core.planner_exceptions import (  # noqa: F401 (re-exported
     NoViapointsGiven,
     PlannerCancelled,
 )
-from nav2_planner_py.core.global_planner import GlobalPlanner
-from nav2_planner_py.core.plugin_provider import PluginProvider
+from nav2_core_py.global_planner import GlobalPlanner
+from nav2_core_py.plugin_provider import PluginProvider
 from nav2_planner_py.parameter_handler import ParameterHandler, Parameters
 from nav2_planner_py.is_path_valid_service import IsPathValidService
 
@@ -97,7 +97,7 @@ class PlannerServer(LifecycleNode):
         self._planner_ids_concat: str = ''
         self._plugin_provider = PluginProvider(
             export_tag='nav2_planner',
-            base_class_type='nav2_planner_py.core.global_planner.GlobalPlanner',
+            base_class_type='nav2_core_py.global_planner.GlobalPlanner',
         )
 
         # Parameter handler (manages all parameters)

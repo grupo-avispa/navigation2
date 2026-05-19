@@ -19,7 +19,7 @@ from typing import List
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
 
-from nav2_planner_py.core.global_planner import GlobalPlanner
+from nav2_core_py.global_planner import GlobalPlanner
 
 
 class StraightLinePlanner(GlobalPlanner):

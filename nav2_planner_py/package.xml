@@ -10,6 +10,7 @@
   <exec_depend>rclpy</exec_depend>
   <exec_depend>bondpy</exec_depend>
   <exec_depend>nav2_core_py</exec_depend>
+  <exec_depend>nav2_costmap_2d_py</exec_depend>
   <!-- <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>nav2_msgs</exec_depend>
   <exec_depend>action_msgs</exec_depend>

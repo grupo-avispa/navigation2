@@ -1,7 +1,7 @@
 <library path="nav2_planner_example_py">
     <class name="StraightLinePlanner" type="nav2_planner_example_py.straight_line_planner.StraightLinePlanner" base_class_type="nav2_core_py.global_planner.GlobalPlanner">
         <description>
-      A PlanSys2 planner plugin that uses Large Language Models (LLMs) to generate PDDL plans.
+        A Nav2 planner plugin that generates a straight line path between the start and goal poses. This is a simple example plugin for demonstration purposes.
         </description>
     </class>
 </library>

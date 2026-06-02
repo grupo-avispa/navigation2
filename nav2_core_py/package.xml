@@ -3,12 +3,12 @@
 <package format="3">
   <name>nav2_core_py</name>
   <version>1.4.0</version>
-  <description>Nav2 core interfaces and exceptions for Python plugins</description>
+  <description>A set of headers for plugins core to the Nav2 stack. Python port of nav2_core</description>
   <maintainer email="ajtudela@gmail.com">Alberto Tudela</maintainer>
   <license>Apache-2.0</license>
 
-  <exec_depend>rclpy</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>rclpy</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

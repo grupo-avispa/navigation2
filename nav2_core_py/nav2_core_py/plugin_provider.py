@@ -140,12 +140,13 @@ class PluginProvider:
             An instance of the loaded plugin, or None if loading failed.
 
         """
-        if plugin_id not in self._plugin_descriptors:
+        descriptor = self._resolve_descriptor(plugin_id, node)
+        if descriptor is None:
             node.get_logger().error(
                 f'PluginProvider.load({plugin_id}): plugin not found')
             return None
 
-        attributes = self._plugin_descriptors[plugin_id].attributes()
+        attributes = descriptor.attributes()
 
         # Add module path to sys.path
         module_path = os.path.join(
@@ -188,6 +189,56 @@ class PluginProvider:
                 f'PluginProvider.load({plugin_id}): exception creating instance:\n'
                 f'{traceback.format_exc()}')
             return None
+
+    def _resolve_descriptor(self, plugin_id: str, node: Node):
+        """
+        Resolve a plugin id to a descriptor, tolerating C++-style type names.
+
+        Plugins are registered under the canonical id ``<package>/<ClassName>``
+        (e.g. ``nav2_costmap_2d_py/StaticLayer``). To stay drop-in compatible
+        with stock Nav2 parameter files, this also accepts the C++ pluginlib
+        spelling ``<package>::<ClassName>`` (e.g. ``nav2_costmap_2d::StaticLayer``)
+        and a bare ``<ClassName>``: when there is no exact match, the id is
+        resolved by its class name (the token after the last ``::`` or ``/``).
+
+        Parameters
+        ----------
+        plugin_id : str
+            The requested plugin identifier (canonical, C++-style, or bare).
+        node : Node
+            ROS2 node for logging.
+
+        Returns
+        -------
+        PluginDescriptor or None
+            The matching descriptor, or ``None`` if not found / ambiguous.
+
+        """
+        # 1. Exact match on the canonical id.
+        descriptor = self._plugin_descriptors.get(plugin_id)
+        if descriptor is not None:
+            return descriptor
+
+        # 2. Fall back to the class name, so C++ types map onto Python plugins.
+        class_name = plugin_id.replace('::', '/').rsplit('/', 1)[-1]
+        matches = [
+            d for d in self._plugin_descriptors.values()
+            if d.attributes().get('class_name') == class_name
+        ]
+        if len(matches) == 1:
+            node.get_logger().info(
+                f"PluginProvider.load: resolved '{plugin_id}' to "
+                f"'{matches[0].plugin_id()}' by class name"
+            )
+            return matches[0]
+        if len(matches) > 1:
+            candidates = ', '.join(sorted(d.plugin_id() for d in matches))
+            node.get_logger().error(
+                f"PluginProvider.load({plugin_id}): ambiguous class name "
+                f"'{class_name}' matches multiple plugins: {candidates}. "
+                'Use the full <package>/<Class> id to disambiguate.'
+            )
+        return None
 
     def unload(self, plugin_instance):
         """

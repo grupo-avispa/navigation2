@@ -31,7 +31,7 @@ It mirrors the nav2_costmap_2d::Layer from the C++ implementation.
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
 
@@ -45,9 +45,9 @@ class Layer(ABC):
         self._name: str = ''
         self._enabled: bool = True
         self._current: bool = False
-        self._layered_costmap = None   # LayeredCostmap reference (set by initialize)
-        self._tf_buffer = None
-        self._node = None
+        self._layered_costmap: Optional[Any] = None   # LayeredCostmap reference (set by initialize)
+        self._tf_buffer: Optional[Any] = None
+        self._node: Optional[Any] = None
         # Footprint cache (set by LayeredCostmap.set_footprint)
         self._footprint: list = []
 

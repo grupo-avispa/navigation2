@@ -24,7 +24,7 @@ import threading
 from typing import List, Optional
 
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
-from nav2_costmap_2d_py.cost_values import NO_INFORMATION, FREE_SPACE
+from nav2_costmap_2d_py.core.cost_values import FREE_SPACE, NO_INFORMATION
 
 
 class LayeredCostmap:

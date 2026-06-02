@@ -33,7 +33,7 @@ import math
 import threading
 from typing import Tuple
 
-from nav2_costmap_2d_py.cost_values import FREE_SPACE
+from nav2_costmap_2d_py.core.cost_values import FREE_SPACE
 
 
 class Costmap2D:
@@ -322,7 +322,7 @@ class Costmap2D:
     def default_value(self, val: int) -> None:
         self._default_value = val
 
-    def get_mutex(self) -> threading.Lock:
+    def get_mutex(self) -> threading.RLock:
         return self._mutex
 
     def is_in_bounds(self, mx: int, my: int) -> bool:

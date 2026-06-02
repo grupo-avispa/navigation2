@@ -26,6 +26,7 @@ from typing import List, Optional, Tuple
 import rclpy
 from rclpy.duration import Duration
 from rclpy.lifecycle import LifecycleNode
+from typing import Any, Optional
 
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
@@ -72,7 +73,7 @@ class IsPathValidService:
         self._costmap_update_timeout = costmap_update_timeout
         self._logger = rclpy.logging.get_logger("is_path_valid_service")
         self._costmap = None
-        self._service = None
+        self._service: Optional[Any] = None
 
     def initialize(self) -> None:
         """Initialize the IsPathValid service."""

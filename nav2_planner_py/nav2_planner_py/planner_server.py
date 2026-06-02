@@ -31,7 +31,7 @@ import math
 import threading
 import time
 import traceback
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from bondpy import bondpy
 import rclpy
@@ -125,7 +125,7 @@ class PlannerServer(LifecycleNode):
         self._callback_group = ReentrantCallbackGroup()
 
         # Plan publisher
-        self._plan_publisher: Optional[rclpy.Publisher] = None
+        self._plan_publisher: Optional[Any] = None
 
         # Service to determine if a path is valid
         self._is_path_valid_service: Optional[IsPathValidService] = None
@@ -159,7 +159,7 @@ class PlannerServer(LifecycleNode):
             # Configure the costmap before spinning its executor so that the
             # lifecycle_manager cannot race-configure it via the lifecycle
             # service while on_configure(None) is still running.
-            result = self._costmap_ros.on_configure(None)
+            result = self._costmap_ros.on_configure(None)  # type: ignore[arg-type]
             if result != TransitionCallbackReturn.SUCCESS:
                 raise RuntimeError('Failed to configure costmap')
             # Only AFTER configure succeeds, start the dedicated executor so

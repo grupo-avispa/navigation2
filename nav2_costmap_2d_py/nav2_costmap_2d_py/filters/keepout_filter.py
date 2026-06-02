@@ -30,13 +30,14 @@ from rclpy.qos import (
     QoSHistoryPolicy,
     QoSReliabilityPolicy,
 )
+from typing import Any, Optional
 
 from nav_msgs.msg import OccupancyGrid
 
 from nav2_costmap_2d_py.core.costmap_layer import CostmapLayer
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
-from nav2_costmap_2d_py.cost_values import (
-    FREE_SPACE, LETHAL_OBSTACLE, NO_INFORMATION
+from nav2_costmap_2d_py.core.cost_values import (
+    FREE_SPACE, LETHAL_OBSTACLE, NO_INFORMATION,
 )
 
 # OccupancyGrid threshold: cells >= this value are kept-out
@@ -59,8 +60,8 @@ class KeepoutFilter(CostmapLayer):
         super().__init__()
         self._filter_info_topic = 'costmap_filter_info'
         self._mask_topic = 'keepout_filter_mask'
-        self._mask_sub = None
-        self._filter_info_sub = None
+        self._mask_sub: Optional[Any] = None
+        self._filter_info_sub: Optional[Any] = None
         self._mask_received = False
         self._has_new_data = False
 

@@ -234,7 +234,7 @@ class PluginProvider:
         if len(matches) > 1:
             candidates = ', '.join(sorted(d.plugin_id() for d in matches))
             node.get_logger().error(
-                f"PluginProvider.load({plugin_id}): ambiguous class name "
+                f'PluginProvider.load({plugin_id}): ambiguous class name '
                 f"'{class_name}' matches multiple plugins: {candidates}. "
                 'Use the full <package>/<Class> id to disambiguate.'
             )

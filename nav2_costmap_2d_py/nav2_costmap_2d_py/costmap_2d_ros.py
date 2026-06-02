@@ -28,7 +28,7 @@ import math
 import threading
 import time
 import traceback
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import rclpy
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
@@ -168,10 +168,10 @@ class Costmap2DROS(LifecycleNode):
         self._tf_listener: Optional[TransformListener] = None
         self._costmap_publisher: Optional[Costmap2DPublisher] = None
         self._layer_publishers: List[Costmap2DPublisher] = []
-        self._footprint_pub = None
-        self._footprint_sub = None
+        self._footprint_pub: Optional[Any] = None
+        self._footprint_sub: Optional[Any] = None
         self._clear_costmap_service: Optional[ClearCostmapService] = None
-        self._get_cost_service = None
+        self._get_cost_service: Optional[Any] = None
 
         # Update thread
         self._map_update_thread: Optional[threading.Thread] = None
@@ -426,7 +426,7 @@ class Costmap2DROS(LifecycleNode):
         self._start()   # calls plugin.activate() and sets stopped_ = False
 
         # Dynamic parameter callback
-        self._dyn_params_handler = self.add_on_set_parameters_callback(
+        self._dyn_params_handler = self.add_on_set_parameters_callback(  # type: ignore[func-returns-value]
             self._dynamic_parameters_callback
         )
 

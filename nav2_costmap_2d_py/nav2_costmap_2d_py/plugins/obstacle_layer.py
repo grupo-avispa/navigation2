@@ -26,14 +26,16 @@ Plugin type string:
 
 import math
 import threading
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from sensor_msgs.msg import LaserScan
 
 from nav2_costmap_2d_py.core.costmap_layer import CostmapLayer
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
-from nav2_costmap_2d_py.cost_values import (
-    FREE_SPACE, LETHAL_OBSTACLE, NO_INFORMATION
+from nav2_costmap_2d_py.core.cost_values import (
+    FREE_SPACE,
+    LETHAL_OBSTACLE,
+    NO_INFORMATION,
 )
 
 
@@ -65,8 +67,8 @@ class ObstacleLayer(CostmapLayer):
         self._footprint_clearing_enabled = True
         self._max_obstacle_height = 2.0
         self._observation_sources: List[str] = []
-        self._subs = []
-        self._observations: List[Tuple] = []   # (marking, clearing, scan_data_list)
+        self._subs: List[Any] = []
+        self._observations: List[Dict[str, Any]] = []   # {buffer, marking, clearing}
         self._obs_lock = threading.Lock()
 
         # Dirty bounds
@@ -215,7 +217,7 @@ class ObstacleLayer(CostmapLayer):
                 import tf2_ros
                 from rclpy.duration import Duration
                 transform = self._tf_buffer.lookup_transform(
-                    self._layered_costmap.get_global_frame_id(),
+                    self._layered_costmap.get_global_frame_id() if self._layered_costmap is not None else '',
                     msg.header.frame_id,
                     msg.header.stamp,
                     timeout=Duration(seconds=0.1),
@@ -248,6 +250,8 @@ class ObstacleLayer(CostmapLayer):
     ) -> None:
         """Clear the cells under the robot footprint."""
         if not footprint:
+            return
+        if self._layered_costmap is None:
             return
         master = self._layered_costmap.get_costmap()
         from nav2_costmap_2d_py.core.layered_costmap import transform_footprint

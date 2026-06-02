@@ -1,6 +1,3 @@
-from glob import glob
-import os
-
 from setuptools import setup, find_packages
 
 package_name = 'nav2_core_py'

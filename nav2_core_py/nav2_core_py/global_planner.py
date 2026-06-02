@@ -1,4 +1,3 @@
-#! /usr/bin/env python3
 # Copyright (c) 2026 Alberto J. Tudela Roldán
 # Copyright (c) 2026 Grupo Avispa, DTE, Universidad de Málaga
 #

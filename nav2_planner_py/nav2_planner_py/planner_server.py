@@ -1,4 +1,5 @@
-# Copyright (c) 2025 Nav2 Python Port
+# Copyright (c) 2026 Alberto J. Tudela Roldán
+# Copyright (c) 2026 Grupo Avispa, DTE, Universidad de Málaga
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -27,6 +28,7 @@ Action servers:
 """
 
 import math
+import threading
 import time
 import traceback
 from typing import Dict, List, Optional
@@ -38,7 +40,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 import tf2_ros
-from nav2_planner_py.costmap_2d_ros import Costmap2DROS
+from nav2_costmap_2d_py import Costmap2DROS
 from builtin_interfaces.msg import Duration as DurationMsg
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import ComputePathToPose, ComputePathThroughPoses
@@ -99,6 +101,9 @@ class PlannerServer(LifecycleNode):
             export_tag='nav2_planner',
             base_class_type='nav2_core_py.global_planner.GlobalPlanner',
         )
+        # Pre-scan the ament resource index for plugins
+        # to warm the provider's cache and speed up on_configure.
+        self._plugin_provider.discover(self)
 
         # Parameter handler (manages all parameters)
         self._param_handler: Optional[ParameterHandler] = None
@@ -111,6 +116,10 @@ class PlannerServer(LifecycleNode):
         # TF / costmap interfaces
         self._tf_buffer: Optional[tf2_ros.Buffer] = None
         self._costmap_ros: Optional[Costmap2DROS] = None
+        self._costmap_executor: Optional[rclpy.executors.SingleThreadedExecutor] = None
+        self._costmap_thread: Optional[threading.Thread] = None
+        self._costmap_activated: threading.Event = threading.Event()
+        self._costmap_activate_thread: Optional[threading.Thread] = None
 
         # Callback group for action servers
         self._callback_group = ReentrantCallbackGroup()
@@ -132,7 +141,11 @@ class PlannerServer(LifecycleNode):
     # ------------------------------------------------------------------
 
     def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
-        """Configure: load TF, costmap, plugins, create action servers."""
+        """Configure: load TF, costmap and plugins synchronously."""
+        return self._on_configure_impl(state)
+
+    def _on_configure_impl(self, state: LifecycleState) -> TransitionCallbackReturn:
+        """Internal configure implementation."""
         self.get_logger().info('Configuring')
 
         # --- Global Costmap --------------------------------------------
@@ -143,10 +156,23 @@ class PlannerServer(LifecycleNode):
                 use_sim_time=self.get_parameter_or('use_sim_time', rclpy.parameter.Parameter(
                     'use_sim_time', rclpy.Parameter.Type.BOOL, False)).value,
             )
-            # Trigger costmap configuration
+            # Configure the costmap before spinning its executor so that the
+            # lifecycle_manager cannot race-configure it via the lifecycle
+            # service while on_configure(None) is still running.
             result = self._costmap_ros.on_configure(None)
             if result != TransitionCallbackReturn.SUCCESS:
                 raise RuntimeError('Failed to configure costmap')
+            # Only AFTER configure succeeds, start the dedicated executor so
+            # that TF/topic subscriptions are served during on_activate and
+            # steady-state operation.
+            self._costmap_executor = rclpy.executors.SingleThreadedExecutor()
+            self._costmap_executor.add_node(self._costmap_ros)
+            self._costmap_thread = threading.Thread(
+                target=self._costmap_executor.spin,
+                daemon=True,
+                name='costmap_executor',
+            )
+            self._costmap_thread.start()
         except Exception as ex:  # noqa: BLE001
             self.get_logger().fatal(
                 f'Failed to initialize Costmap2DROS: {ex}.')
@@ -177,9 +203,14 @@ class PlannerServer(LifecycleNode):
         self._params = self._param_handler.get_parameters()
 
         # --- Planner plugins ------------------------------------------
-        # Discover all available plugins registered via plugin.xml
+        # Use pre-discovered plugins from __init__ if available (warm cache),
+        # otherwise do a full scan (e.g. first call after cleanup reset).
         self.get_logger().info(f'[{self.get_name()}] Discovering plugins...')
-        plugin_descriptors = self._plugin_provider.discover(self)
+        cached = self._plugin_provider.get_plugin_descriptors()
+        if cached:
+            plugin_descriptors = list(cached.values())
+        else:
+            plugin_descriptors = self._plugin_provider.discover(self)
         if not plugin_descriptors:
             self.get_logger().warning(f'[{self.get_name()}] No plugins found!')
 
@@ -188,7 +219,7 @@ class PlannerServer(LifecycleNode):
                 try:
                     plugin_type = self._params.planner_types[i]
 
-                    # Load plugin instance via provider (mirrors PlanSys2 approach)
+                    # Load plugin instance via provider
                     planner = self._plugin_provider.load(plugin_type, self)
 
                     if planner is None:
@@ -207,10 +238,11 @@ class PlannerServer(LifecycleNode):
                         f'[{self.get_name()}] Created planner: '
                         f"'{planner_id}' of type '{plugin_type}'"
                     )
-                except RuntimeError as ex:
+                except Exception as ex:  # noqa: BLE001
                     self.get_logger().fatal(
-                        f'[{self.get_name()}] Failed to create planner. '
-                        f'Exception: {ex}'
+                        f"[{self.get_name()}] Failed to create planner "
+                        f"'{planner_id}': {type(ex).__name__}: {ex}\n"
+                        f'{traceback.format_exc()}'
                     )
                     self.on_cleanup(state)
                     return TransitionCallbackReturn.FAILURE
@@ -231,30 +263,41 @@ class PlannerServer(LifecycleNode):
             f'{planner_ids_concat}'
         )
 
-        # Initialize plan publisher
-        self._plan_publisher = self.create_publisher(Path, 'plan', 10)
+        # Initialize plan publisher, services and action servers
+        try:
+            self._plan_publisher = self.create_publisher(Path, 'plan', 10)
+            self.get_logger().debug('Publisher created')
 
-        # Create is path valid service
-        self._is_path_valid_service = IsPathValidService(
-            self, self._costmap_ros, self._params.costmap_update_timeout)
+            self._is_path_valid_service = IsPathValidService(
+                self, self._costmap_ros, self._params.costmap_update_timeout)
+            self.get_logger().debug('IsPathValidService created')
 
-        # --- Action servers -------------------------------------------
-        # ComputePathToPose
-        self._action_server_pose = ActionServer(
-            self,
-            ComputePathToPose,
-            'compute_path_to_pose',
-            execute_callback=self._compute_path_to_pose_callback,
-            callback_group=self._callback_group,
-        )
-        # ComputePathThroughPoses
-        self._action_server_poses = ActionServer(
-            self,
-            ComputePathThroughPoses,
-            'compute_path_through_poses',
-            execute_callback=self._compute_path_through_poses_callback,
-            callback_group=self._callback_group,
-        )
+            # --- Action servers -------------------------------------------
+            self._action_server_pose = ActionServer(
+                self,
+                ComputePathToPose,
+                'compute_path_to_pose',
+                execute_callback=self._compute_path_to_pose_callback,
+                callback_group=self._callback_group,
+            )
+            self.get_logger().debug('ActionServer ComputePathToPose created')
+
+            self._action_server_poses = ActionServer(
+                self,
+                ComputePathThroughPoses,
+                'compute_path_through_poses',
+                execute_callback=self._compute_path_through_poses_callback,
+                callback_group=self._callback_group,
+            )
+            self.get_logger().debug('ActionServer ComputePathThroughPoses created')
+
+        except Exception as ex:  # noqa: BLE001
+            self.get_logger().fatal(
+                f'[on_configure] Failed creating publisher/service/action-server: '
+                f'{type(ex).__name__}: {ex}\n{traceback.format_exc()}'
+            )
+            self.on_cleanup(state)
+            return TransitionCallbackReturn.FAILURE
 
         self.get_logger().info('Configured')
         return TransitionCallbackReturn.SUCCESS
@@ -262,26 +305,55 @@ class PlannerServer(LifecycleNode):
     def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
         """Activate costmap and all planner plugins."""
         self.get_logger().info('Activating')
-
-        if self._costmap_ros is not None:
-            result = self._costmap_ros.on_activate(state)
-            if result != TransitionCallbackReturn.SUCCESS:
-                self.get_logger().warning('Failed to activate costmap')
-
-        for _, planner in self._planners.items():
-            planner.activate()
-
-        if self._is_path_valid_service:
-            self._is_path_valid_service.initialize()
+        self._costmap_activated.clear()
 
         self.create_bond()
 
-        self.get_logger().info('Activated')
+        self._costmap_activate_thread = threading.Thread(
+            target=self._activate_background,
+            args=(state,),
+            daemon=True,
+            name='planner_activate',
+        )
+        self._costmap_activate_thread.start()
         return TransitionCallbackReturn.SUCCESS
+
+    def _activate_background(self, state: LifecycleState) -> None:
+        """Run costmap and plugin activation in a background thread."""
+        try:
+            if self._costmap_ros is not None:
+                result = self._costmap_ros.on_activate(state)
+                if result == TransitionCallbackReturn.SUCCESS:
+                    self._costmap_activated.set()
+                    self.get_logger().info('Costmap activated (background)')
+                else:
+                    self.get_logger().error(
+                        'Background costmap activation failed; planning will be unavailable.'
+                    )
+            else:
+                self._costmap_activated.set()
+
+            for _, planner in self._planners.items():
+                planner.activate()
+
+            if self._is_path_valid_service:
+                self._is_path_valid_service.initialize()
+
+            self.get_logger().info('Activated (background)')
+        except Exception:  # noqa: BLE001
+            self.get_logger().fatal(
+                f'Background activation failed:\n{traceback.format_exc()}'
+            )
 
     def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
         """Deactivate all planner plugins and costmap."""
         self.get_logger().info('Deactivating')
+
+        # Wait for background activate thread to settle before touching
+        # shared objects (planners, costmap).
+        if self._costmap_activate_thread is not None and self._costmap_activate_thread.is_alive():
+            self.get_logger().info('Waiting for background activation to complete...')
+            self._costmap_activate_thread.join(timeout=10.0)
 
         for _, planner in self._planners.items():
             planner.deactivate()
@@ -315,11 +387,24 @@ class PlannerServer(LifecycleNode):
             self._action_server_poses.destroy()
             self._action_server_poses = None
 
+        if self._costmap_activate_thread is not None \
+                and self._costmap_activate_thread.is_alive() \
+                and threading.current_thread() is not self._costmap_activate_thread:
+            self._costmap_activate_thread.join(timeout=5.0)
+        self._costmap_activate_thread = None
+        self._costmap_activated.clear()
+
         if self._costmap_ros is not None:
             result = self._costmap_ros.on_cleanup(state)
             if result != TransitionCallbackReturn.SUCCESS:
                 self.get_logger().warning('Failed to cleanup costmap')
             self._costmap_ros = None
+        if self._costmap_executor is not None:
+            self._costmap_executor.shutdown(timeout_sec=2.0)
+            self._costmap_executor = None
+        if self._costmap_thread is not None:
+            self._costmap_thread.join(timeout=2.0)
+            self._costmap_thread = None
 
         self._tf_buffer = None
         self.get_logger().info('Cleaned up')
@@ -333,8 +418,6 @@ class PlannerServer(LifecycleNode):
         """
         Create bond connection to lifecycle manager.
 
-        Mirrors nav2::LifecycleNode::createBond() from C++.
-        Uses the node name as bond ID on the 'bond' topic.
         """
         if self._bond_heartbeat_period > 0.0:
             self.get_logger().info(
@@ -352,8 +435,6 @@ class PlannerServer(LifecycleNode):
     def destroy_bond(self) -> None:
         """
         Destroy bond connection to lifecycle manager.
-
-        Mirrors nav2::LifecycleNode::destroyBond() from C++.
         """
         if self._bond_heartbeat_period > 0.0:
             self.get_logger().info(
@@ -384,13 +465,13 @@ class PlannerServer(LifecycleNode):
             # Check if action server is still active
             if not goal_handle.is_active:
                 self.get_logger().debug('Action server inactive')
-                return
+                return result
 
             # Check for cancellation
-            if goal_handle.is_cancel_requested():
+            if goal_handle.is_cancel_requested:
                 self.get_logger().info('Goal was canceled')
                 goal_handle.canceled()
-                return
+                return result
 
             # Wait for costmap to be current
             costmap_wait = self._wait_for_costmap()
@@ -412,7 +493,7 @@ class PlannerServer(LifecycleNode):
                     'Unable to transform poses to global frame')
 
             # Create cancel checker
-            def cancel_checker(): return goal_handle.is_cancel_requested()
+            def cancel_checker(): return goal_handle.is_cancel_requested
 
             # Get plan
             result.path = self._get_plan(
@@ -503,6 +584,8 @@ class PlannerServer(LifecycleNode):
             result.error_code = ComputePathToPose.Result.UNKNOWN
             goal_handle.abort(result)
 
+        return result
+
     # --- ComputePathThroughPoses --------------------------------------
 
     async def _compute_path_through_poses_callback(self, goal_handle):
@@ -531,13 +614,13 @@ class PlannerServer(LifecycleNode):
             # Check if action server is still active
             if not goal_handle.is_active:
                 self.get_logger().debug('Action server inactive')
-                return
+                return result
 
             # Check for cancellation
-            if goal_handle.is_cancel_requested():
+            if goal_handle.is_cancel_requested:
                 self.get_logger().info('Goal was canceled')
                 goal_handle.canceled()
-                return
+                return result
 
             # Wait for costmap to be current
             costmap_wait = self._wait_for_costmap()
@@ -557,7 +640,7 @@ class PlannerServer(LifecycleNode):
                 raise PlannerTFError('Unable to get start pose')
 
             # Create cancel checker
-            def cancel_checker(): return goal_handle.is_cancel_requested()
+            def cancel_checker(): return goal_handle.is_cancel_requested
 
             # Initialize concatenated path
             concat_path = Path()
@@ -715,6 +798,8 @@ class PlannerServer(LifecycleNode):
                 start_pose, goal_pose, goal.planner_id, ex, result)
             result.error_code = ComputePathThroughPoses.Result.UNKNOWN
             goal_handle.abort(result)
+
+        return result
 
     # ------------------------------------------------------------------
     # Core planning logic
@@ -972,10 +1057,6 @@ class PlannerServer(LifecycleNode):
         msg.nanosec = int((seconds - msg.sec) * 1e9)
         return msg
 
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 def main(args=None):
     """Run the Nav2 Planner Server node."""

@@ -31,8 +31,8 @@ from typing import Dict, List, Optional, Tuple
 
 from nav2_costmap_2d_py.core.layer import Layer
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
-from nav2_costmap_2d_py.cost_values import (
-    FREE_SPACE, LETHAL_OBSTACLE, INSCRIBED_INFLATED_OBSTACLE, NO_INFORMATION
+from nav2_costmap_2d_py.core.cost_values import (
+    FREE_SPACE, INSCRIBED_INFLATED_OBSTACLE, LETHAL_OBSTACLE, NO_INFORMATION,
 )
 
 

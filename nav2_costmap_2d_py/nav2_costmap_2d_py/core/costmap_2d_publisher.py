@@ -34,15 +34,13 @@ from rclpy.qos import (
 from nav_msgs.msg import OccupancyGrid
 from map_msgs.msg import OccupancyGridUpdate
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
-from nav2_costmap_2d_py.cost_values import (
-    NO_INFORMATION, LETHAL_OBSTACLE, INSCRIBED_INFLATED_OBSTACLE, FREE_SPACE
+from nav2_costmap_2d_py.core.cost_values import (
+    FREE_SPACE, INSCRIBED_INFLATED_OBSTACLE, LETHAL_OBSTACLE, NO_INFORMATION,
 )
 
 
 def _build_cost_translation_table() -> list:
-    """
-    Build a 256-element LUT from costmap cost → OccupancyGrid value.
-    """
+    """Build a 256-element LUT from costmap cost → OccupancyGrid value."""
     table = [0] * 256
     table[FREE_SPACE] = 0
     table[NO_INFORMATION] = -1

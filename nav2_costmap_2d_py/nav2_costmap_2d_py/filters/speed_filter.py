@@ -27,14 +27,14 @@ Plugin type string:
 """
 
 import math
-from typing import Optional
+from typing import Any, Optional
 
 from nav_msgs.msg import OccupancyGrid
 from nav2_msgs.msg import SpeedLimit
 
 from nav2_costmap_2d_py.core.layer import Layer
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
-from nav2_costmap_2d_py.cost_values import FREE_SPACE, NO_INFORMATION
+from nav2_costmap_2d_py.core.cost_values import FREE_SPACE, NO_INFORMATION
 
 _EPSILON = 1e-6
 
@@ -68,8 +68,8 @@ class SpeedFilter(Layer):
         self._mask_origin_x: float = 0.0
         self._mask_origin_y: float = 0.0
 
-        self._mask_sub = None
-        self._speed_limit_pub = None
+        self._mask_sub: Optional[Any] = None
+        self._speed_limit_pub: Optional[Any] = None
         self._last_speed_limit: Optional[float] = None
 
     def on_initialize(self) -> None:
@@ -133,7 +133,7 @@ class SpeedFilter(Layer):
         # without the node reference, so we use master costmap's origin).
         # Plugins that need robot pose should use self._node directly.
         try:
-            robot_pose = self._node.get_robot_pose()
+            robot_pose = self._node.get_robot_pose()  # type: ignore[union-attr]
         except AttributeError:
             return
 

@@ -26,7 +26,7 @@ Plugin type string:
 """
 
 import math
-from typing import Optional
+from typing import Any, Optional
 
 from rclpy.qos import (
     QoSProfile,
@@ -39,8 +39,8 @@ from nav_msgs.msg import OccupancyGrid
 
 from nav2_costmap_2d_py.core.costmap_layer import CostmapLayer
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
-from nav2_costmap_2d_py.cost_values import (
-    FREE_SPACE, LETHAL_OBSTACLE, INSCRIBED_INFLATED_OBSTACLE, NO_INFORMATION
+from nav2_costmap_2d_py.core.cost_values import (
+    FREE_SPACE, INSCRIBED_INFLATED_OBSTACLE, LETHAL_OBSTACLE, NO_INFORMATION,
 )
 
 _EPSILON = 1e-6
@@ -73,8 +73,8 @@ class StaticLayer(CostmapLayer):
         self._trinary_costmap = True
         self._transform_tolerance = 0.0
 
-        self._map_sub = None
-        self._map_update_sub = None
+        self._map_sub: Optional[Any] = None
+        self._map_update_sub: Optional[Any] = None
         self._has_updated_data = False
         self._map_received = False
 

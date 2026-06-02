@@ -1,0 +1,20 @@
+<library path="">
+  <!-- ===== Layer plugins ===== -->
+  <class name="StaticLayer" type="nav2_costmap_2d_py.plugins.static_layer.StaticLayer" base_class_type="nav2_costmap_2d_py.core.layer.Layer">
+    <description>Reads a static OccupancyGrid map from a topic and writes it into the master costmap.</description>
+  </class>
+  <class name="ObstacleLayer" type="nav2_costmap_2d_py.plugins.obstacle_layer.ObstacleLayer" base_class_type="nav2_costmap_2d_py.core.layer.Layer">
+    <description>Marks and clears obstacles from laser/pointcloud sensor data.</description>
+  </class>
+  <class name="InflationLayer" type="nav2_costmap_2d_py.plugins.inflation_layer.InflationLayer" base_class_type="nav2_costmap_2d_py.core.layer.Layer">
+    <description>Inflates obstacle costs outward by a configurable radius.</description>
+  </class>
+
+  <!-- ===== Costmap filter plugins ===== -->
+  <class name="KeepoutFilter" type="nav2_costmap_2d_py.filters.keepout_filter.KeepoutFilter" base_class_type="nav2_costmap_2d_py.core.layer.Layer">
+    <description>Applies a binary keepout mask from an OccupancyGrid onto the costmap.</description>
+  </class>
+  <class name="SpeedFilter" type="nav2_costmap_2d_py.filters.speed_filter.SpeedFilter" base_class_type="nav2_costmap_2d_py.core.layer.Layer">
+    <description>Limits robot speed based on a speed-restriction mask.</description>
+  </class>
+</library>

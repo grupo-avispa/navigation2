@@ -548,17 +548,13 @@ class PlannerServer(LifecycleNode):
                 raise PlannerTFError(
                     'Unable to transform poses to global frame')
 
-            # Create cancel checker
-            def cancel_checker():
-                return goal_handle.is_cancel_requested
-
             # Get plan
             result.path = self._get_plan(
                 start_pose,
                 goal_pose,
                 planner_id,
                 list(goal.viapoints) if hasattr(goal, 'viapoints') else [],
-                cancel_checker,
+                lambda: self._cancel_checker(goal_handle),
             )
 
             # Validate path
@@ -708,10 +704,6 @@ class PlannerServer(LifecycleNode):
             else:
                 raise PlannerTFError('Unable to get start pose')
 
-            # Create cancel checker
-            def cancel_checker():
-                return goal_handle.is_cancel_requested
-
             # Initialize concatenated path
             concat_path = Path()
 
@@ -741,7 +733,7 @@ class PlannerServer(LifecycleNode):
                         curr_goal,
                         planner_id,
                         [],
-                        cancel_checker,
+                        lambda: self._cancel_checker(goal_handle),
                     )
                 except PlannerException as ex:
                     if i == 0 or not partial_plan_allowed:
@@ -1143,6 +1135,11 @@ class PlannerServer(LifecycleNode):
             result.error_msg = error_msg
 
         self.get_logger().warning(error_msg)
+
+    @staticmethod
+    def _cancel_checker(goal_handle) -> bool:
+        """Return whether the goal handle has a pending cancellation request."""
+        return goal_handle.is_cancel_requested
 
     @staticmethod
     def _build_duration_msg(seconds: float) -> DurationMsg:

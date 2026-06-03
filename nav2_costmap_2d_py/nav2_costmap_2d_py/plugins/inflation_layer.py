@@ -27,7 +27,7 @@ Plugin type string:
 
 import heapq
 import math
-from typing import Any, List, Tuple
+from typing import List, Tuple
 
 from nav2_costmap_2d_py.core.cost_values import INSCRIBED_INFLATED_OBSTACLE, LETHAL_OBSTACLE
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
@@ -66,24 +66,19 @@ class InflationLayer(Layer):
     def on_initialize(self) -> None:
         """Initialize the layer on startup: read the inflation parameters."""
         node = self._node
-        name = self._name
 
-        def _p(param: str, default: Any) -> Any:
-            full = f'{name}.{param}'
-            if not node.has_parameter(full):
-                node.declare_parameter(full, default)
-            return node.get_parameter(full).value
-
-        self._enabled = _p('enabled', True)
-        self._inflation_radius = _p('inflation_radius', 0.55)
-        self._cost_scaling_factor = _p('cost_scaling_factor', 10.0)
-        self._inflate_unknown = _p('inflate_unknown', False)
-        self._inflate_around_unknown = _p('inflate_around_unknown', False)
+        self._enabled = self._declare_parameter_if_not_declared('enabled', True)
+        self._inflation_radius = self._declare_parameter_if_not_declared('inflation_radius', 0.55)
+        self._cost_scaling_factor = self._declare_parameter_if_not_declared(
+            'cost_scaling_factor', 10.0)
+        self._inflate_unknown = self._declare_parameter_if_not_declared('inflate_unknown', False)
+        self._inflate_around_unknown = self._declare_parameter_if_not_declared(
+            'inflate_around_unknown', False)
 
         self._need_reinflation = True
 
         node.get_logger().info(
-            f'[InflationLayer] "{name}": '
+            f'[InflationLayer] "{self._name}": '
             f'radius={self._inflation_radius:.3f} m  '
             f'scaling={self._cost_scaling_factor:.2f}'
         )

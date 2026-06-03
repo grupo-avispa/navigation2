@@ -70,19 +70,14 @@ class SpeedFilter(Layer):
     def on_initialize(self) -> None:
         """Initialize the filter: read params, subscribe to the mask and create the publisher."""
         node = self._node
-        name = self._name
 
-        def _p(param: str, default: Any) -> Any:
-            full = f'{name}.{param}'
-            if not node.has_parameter(full):
-                node.declare_parameter(full, default)
-            return node.get_parameter(full).value
-
-        self._enabled = _p('enabled', True)
-        self._speed_limit_topic = _p('speed_limit_topic', 'speed_limit')
-        self._mask_topic = _p('mask_topic', 'speed_filter_mask')
-        self._percentage = _p('percentage', True)
-        self._base_speed = _p('base_speed', 0.5)
+        self._enabled = self._declare_parameter_if_not_declared('enabled', True)
+        self._speed_limit_topic = self._declare_parameter_if_not_declared(
+            'speed_limit_topic', 'speed_limit')
+        self._mask_topic = self._declare_parameter_if_not_declared(
+            'mask_topic', 'speed_filter_mask')
+        self._percentage = self._declare_parameter_if_not_declared('percentage', True)
+        self._base_speed = self._declare_parameter_if_not_declared('base_speed', 0.5)
 
         self._mask_sub = node.create_subscription(
             OccupancyGrid,
@@ -98,7 +93,7 @@ class SpeedFilter(Layer):
         )
 
         node.get_logger().info(
-            f'[SpeedFilter] "{name}" subscribing to mask "{self._mask_topic}", '
+            f'[SpeedFilter] "{self._name}" subscribing to mask "{self._mask_topic}", '
             f'publishing to "{self._speed_limit_topic}"'
         )
 

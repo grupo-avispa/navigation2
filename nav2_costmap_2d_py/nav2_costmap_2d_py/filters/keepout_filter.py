@@ -59,19 +59,12 @@ class KeepoutFilter(CostmapLayer):
     def on_initialize(self) -> None:
         """Initialize the filter on startup: read parameters and subscribe to the mask topic."""
         node = self._node
-        name = self._name
 
-        def _p(param: str, default: Any) -> Any:
-            full = f'{name}.{param}'
-            if not node.has_parameter(full):
-                node.declare_parameter(full, default)
-            return node.get_parameter(full).value
-
-        self._enabled = _p('enabled', True)
+        self._enabled = self._declare_parameter_if_not_declared('enabled', True)
         # Resolve against the parent namespace (see Layer.join_with_parent_namespace):
         # the costmap node sits in the '/global_costmap' sub-namespace.
         self._mask_topic = self.join_with_parent_namespace(
-            _p('mask_topic', 'keepout_filter_mask'))
+            self._declare_parameter_if_not_declared('mask_topic', 'keepout_filter_mask'))
 
         # The filter mask is latched
         mask_qos = QoSProfile(
@@ -88,7 +81,7 @@ class KeepoutFilter(CostmapLayer):
         )
 
         node.get_logger().info(
-            f'[KeepoutFilter] "{name}" subscribing to mask "{self._mask_topic}"'
+            f'[KeepoutFilter] "{self._name}" subscribing to mask "{self._mask_topic}"'
         )
 
     def update_bounds(

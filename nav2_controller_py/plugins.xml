@@ -1,0 +1,76 @@
+<class_libraries>
+
+  <!-- ===== Progress Checkers ===== -->
+  <library path="">
+    <class name="SimpleProgressChecker"
+           type="nav2_controller_py.plugins.simple_progress_checker.SimpleProgressChecker"
+           base_class_type="nav2_core_py.progress_checker.ProgressChecker">
+      <description>
+        Checks if the distance between the current and previous robot pose
+        is above a minimum threshold within a time allowance.
+      </description>
+    </class>
+    <class name="PoseProgressChecker"
+           type="nav2_controller_py.plugins.pose_progress_checker.PoseProgressChecker"
+           base_class_type="nav2_core_py.progress_checker.ProgressChecker">
+      <description>
+        Checks if the distance and angle between the current and previous robot
+        pose is above a minimum threshold within a time allowance.
+      </description>
+    </class>
+  </library>
+
+  <!-- ===== Goal Checkers ===== -->
+  <library path="">
+    <class name="SimpleGoalChecker"
+           type="nav2_controller_py.plugins.simple_goal_checker.SimpleGoalChecker"
+           base_class_type="nav2_core_py.goal_checker.GoalChecker">
+      <description>
+        Checks if the current pose is within the goal window for x, y and yaw.
+      </description>
+    </class>
+    <class name="StoppedGoalChecker"
+           type="nav2_controller_py.plugins.stopped_goal_checker.StoppedGoalChecker"
+           base_class_type="nav2_core_py.goal_checker.GoalChecker">
+      <description>
+        Checks linear and angular velocity after stopping at the goal.
+      </description>
+    </class>
+    <class name="PositionGoalChecker"
+           type="nav2_controller_py.plugins.position_goal_checker.PositionGoalChecker"
+           base_class_type="nav2_core_py.goal_checker.GoalChecker">
+      <description>
+        Goal checker that only checks XY position and ignores orientation.
+      </description>
+    </class>
+    <class name="AdaptiveToleranceGoalChecker"
+           type="nav2_controller_py.plugins.adaptive_tolerance_goal_checker.AdaptiveToleranceGoalChecker"
+           base_class_type="nav2_core_py.goal_checker.GoalChecker">
+      <description>
+        Goal checker with two tolerance tiers: accepts a tight tolerance
+        immediately, or a loose tolerance when the robot stops making progress.
+      </description>
+    </class>
+    <class name="AxisGoalChecker"
+           type="nav2_controller_py.plugins.axis_goal_checker.AxisGoalChecker"
+           base_class_type="nav2_core_py.goal_checker.GoalChecker">
+      <description>
+        Goal checker that checks progress along the axis defined by the last
+        2 poses of the path.
+      </description>
+    </class>
+  </library>
+
+  <!-- ===== Path Handlers ===== -->
+  <library path="">
+    <class name="FeasiblePathHandler"
+           type="nav2_controller_py.plugins.feasible_path_handler.FeasiblePathHandler"
+           base_class_type="nav2_core_py.path_handler.PathHandler">
+      <description>
+        Prunes the global plan around the robot and transforms the remaining
+        portion into the local costmap global frame for local control.
+      </description>
+    </class>
+  </library>
+
+</class_libraries>

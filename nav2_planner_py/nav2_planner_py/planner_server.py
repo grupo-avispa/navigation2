@@ -27,49 +27,35 @@ Action servers:
     - ComputePathThroughPoses (/compute_path_through_poses)
 """
 
+import io
 import math
 import threading
 import time
 import traceback
 from typing import Any, Dict, List, Optional
 
-from bondpy import bondpy
+from bondpy import bondpy  # type: ignore[import-untyped]
+from builtin_interfaces.msg import Duration as DurationMsg
+from geometry_msgs.msg import PoseStamped, TransformStamped
+from nav2_core_py.global_planner import GlobalPlanner
+from nav2_core_py.planner_exceptions import (GoalOccupied, GoalOutsideMapBounds, InvalidPlanner,
+                                             NoValidPathCouldBeFound, NoViapointsGiven,
+                                             PlannerCancelled, PlannerException, PlannerTFError,
+                                             PlannerTimedOut, StartOccupied, StartOutsideMapBounds)
+from nav2_core_py.plugin_provider import PluginProvider
+from nav2_costmap_2d_py import Costmap2DROS
+from nav2_msgs.action import ComputePathThroughPoses, ComputePathToPose
+from nav2_planner_py.is_path_valid_service import IsPathValidService
+from nav2_planner_py.parameter_handler import ParameterHandler, Parameters
+from nav_msgs.msg import Path
 import rclpy
-from rclpy.action import ActionServer, CancelResponse, GoalResponse
+from rclpy.action import ActionServer
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
-import tf2_ros
-from nav2_costmap_2d_py import Costmap2DROS
-from builtin_interfaces.msg import Duration as DurationMsg
-from geometry_msgs.msg import PoseStamped
-from nav2_msgs.action import ComputePathToPose, ComputePathThroughPoses
-from nav_msgs.msg import Path
+import tf2_geometry_msgs  # type: ignore[import-untyped]  # noqa: F401
+import tf2_ros  # type: ignore[import-untyped]
 
-from nav2_core_py.planner_exceptions import (  # noqa: F401 (re-exported)
-    PlannerException,
-    InvalidPlanner,
-    StartOccupied,
-    GoalOccupied,
-    NoValidPathCouldBeFound,
-    PlannerTimedOut,
-    StartOutsideMapBounds,
-    GoalOutsideMapBounds,
-    TFError,
-    NoViableRoute,
-    PlannerTFError,
-    NoViapointsGiven,
-    PlannerCancelled,
-)
-from nav2_core_py.global_planner import GlobalPlanner
-from nav2_core_py.plugin_provider import PluginProvider
-from nav2_planner_py.parameter_handler import ParameterHandler, Parameters
-from nav2_planner_py.is_path_valid_service import IsPathValidService
-
-
-# ---------------------------------------------------------------------------
-# PlannerServer
-# ---------------------------------------------------------------------------
 
 class PlannerServer(LifecycleNode):
     """
@@ -81,13 +67,6 @@ class PlannerServer(LifecycleNode):
           * ComputePathToPose   (/compute_path_to_pose)
           * ComputePathThroughPoses (/compute_path_through_poses)
       - A global costmap (nav2_costmap_2d::Costmap2DROS).
-
-    Lifecycle transitions:
-      on_configure  → load plugins, create action servers (inactive)
-      on_activate   → activate plugins and costmap, activate action servers
-      on_deactivate → deactivate plugins and costmap
-      on_cleanup    → destroy action servers, cleanup plugins
-      on_shutdown   → shutdown
     """
 
     def __init__(self) -> None:
@@ -141,11 +120,20 @@ class PlannerServer(LifecycleNode):
     # ------------------------------------------------------------------
 
     def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
-        """Configure: load TF, costmap and plugins synchronously."""
-        return self._on_configure_impl(state)
+        """
+        Configure: load TF, costmap and plugins synchronously.
 
-    def _on_configure_impl(self, state: LifecycleState) -> TransitionCallbackReturn:
-        """Internal configure implementation."""
+        Parameters
+        ----------
+        state : LifecycleState
+            Current lifecycle state.
+
+        Returns
+        -------
+        TransitionCallbackReturn
+            SUCCESS if configuration succeeds, FAILURE otherwise.
+
+        """
         self.get_logger().info('Configuring')
 
         # --- Global Costmap --------------------------------------------
@@ -194,8 +182,7 @@ class PlannerServer(LifecycleNode):
             self._param_handler = ParameterHandler(self)
         except RuntimeError as ex:
             self.get_logger().fatal(
-                f'Failed to initialize parameter handler: {ex}\n'
-                + traceback.format_exc()
+                f'Failed to initialize parameter handler: {ex}\n' + traceback.format_exc()
             )
             self.on_cleanup(state)
             return TransitionCallbackReturn.FAILURE
@@ -240,7 +227,7 @@ class PlannerServer(LifecycleNode):
                     )
                 except Exception as ex:  # noqa: BLE001
                     self.get_logger().fatal(
-                        f"[{self.get_name()}] Failed to create planner "
+                        f'[{self.get_name()}] Failed to create planner '
                         f"'{planner_id}': {type(ex).__name__}: {ex}\n"
                         f'{traceback.format_exc()}'
                     )
@@ -303,7 +290,20 @@ class PlannerServer(LifecycleNode):
         return TransitionCallbackReturn.SUCCESS
 
     def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
-        """Activate costmap and all planner plugins."""
+        """
+        Activate costmap and all planner plugins.
+
+        Parameters
+        ----------
+        state : LifecycleState
+            Current lifecycle state, forwarded to background activation.
+
+        Returns
+        -------
+        TransitionCallbackReturn
+            Always SUCCESS; actual activation runs in a background thread.
+
+        """
         self.get_logger().info('Activating')
         self._costmap_activated.clear()
 
@@ -319,7 +319,15 @@ class PlannerServer(LifecycleNode):
         return TransitionCallbackReturn.SUCCESS
 
     def _activate_background(self, state: LifecycleState) -> None:
-        """Run costmap and plugin activation in a background thread."""
+        """
+        Run costmap and plugin activation in a background thread.
+
+        Parameters
+        ----------
+        state : LifecycleState
+            Current lifecycle state forwarded to costmap activation.
+
+        """
         try:
             if self._costmap_ros is not None:
                 result = self._costmap_ros.on_activate(state)
@@ -346,7 +354,20 @@ class PlannerServer(LifecycleNode):
             )
 
     def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
-        """Deactivate all planner plugins and costmap."""
+        """
+        Deactivate all planner plugins and costmap.
+
+        Parameters
+        ----------
+        state : LifecycleState
+            Current lifecycle state.
+
+        Returns
+        -------
+        TransitionCallbackReturn
+            Always SUCCESS.
+
+        """
         self.get_logger().info('Deactivating')
 
         # Wait for background activate thread to settle before touching
@@ -372,7 +393,20 @@ class PlannerServer(LifecycleNode):
         return TransitionCallbackReturn.SUCCESS
 
     def on_cleanup(self, state: LifecycleState) -> TransitionCallbackReturn:
-        """Cleanup plugins, action servers, costmap."""
+        """
+        Cleanup plugins, action servers, costmap.
+
+        Parameters
+        ----------
+        state : LifecycleState
+            Current lifecycle state.
+
+        Returns
+        -------
+        TransitionCallbackReturn
+            Always SUCCESS.
+
+        """
         self.get_logger().info('Cleaning up')
 
         for _, planner in self._planners.items():
@@ -411,14 +445,25 @@ class PlannerServer(LifecycleNode):
         return TransitionCallbackReturn.SUCCESS
 
     def on_shutdown(self, state: LifecycleState) -> TransitionCallbackReturn:
+        """
+        Shutdown the node.
+
+        Parameters
+        ----------
+        state : LifecycleState
+            Current lifecycle state.
+
+        Returns
+        -------
+        TransitionCallbackReturn
+            Always SUCCESS.
+
+        """
         self.get_logger().info('Shutting down')
         return TransitionCallbackReturn.SUCCESS
 
     def create_bond(self) -> None:
-        """
-        Create bond connection to lifecycle manager.
-
-        """
+        """Create bond connection to lifecycle manager."""
         if self._bond_heartbeat_period > 0.0:
             self.get_logger().info(
                 f'Creating bond ({self.get_name()}) to lifecycle manager.'
@@ -433,9 +478,7 @@ class PlannerServer(LifecycleNode):
             self._bond.start()
 
     def destroy_bond(self) -> None:
-        """
-        Destroy bond connection to lifecycle manager.
-        """
+        """Destroy bond connection to lifecycle manager."""
         if self._bond_heartbeat_period > 0.0:
             self.get_logger().info(
                 f'Destroying bond ({self.get_name()}) to lifecycle manager.'
@@ -446,7 +489,20 @@ class PlannerServer(LifecycleNode):
 
     # --- ComputePathToPose --------------------------------------------
     async def _compute_path_to_pose_callback(self, goal_handle):
-        """Execute callback for ComputePathToPose action."""
+        """
+        Execute callback for ComputePathToPose action.
+
+        Parameters
+        ----------
+        goal_handle : ServerGoalHandle
+            The action goal handle containing the request.
+
+        Returns
+        -------
+        ComputePathToPose.Result
+            The result with the computed path or an error code.
+
+        """
         self.get_logger().info('Computing path to goal')
         result = ComputePathToPose.Result()
         start_time = self.get_clock().now()
@@ -493,7 +549,8 @@ class PlannerServer(LifecycleNode):
                     'Unable to transform poses to global frame')
 
             # Create cancel checker
-            def cancel_checker(): return goal_handle.is_cancel_requested
+            def cancel_checker():
+                return goal_handle.is_cancel_requested
 
             # Get plan
             result.path = self._get_plan(
@@ -522,13 +579,14 @@ class PlannerServer(LifecycleNode):
             # Check if we missed the desired rate
             if max_duration > 0.0 and cycle_duration.nanoseconds / 1e9 > max_duration:
                 wait_msg = (
-                    f" Waited {costmap_wait:.2f}s for costmap update."
-                    if costmap_wait > 0.0 else ""
+                    f' Waited {costmap_wait: .2f}s for costmap update.'
+                    if costmap_wait > 0.0 else ''
                 )
                 self.get_logger().warning(
                     f'Planner loop missed its desired rate of '
                     f'{1.0 / max_duration:.4f} Hz. '
-                    f'Current loop rate is {1.0 / (cycle_duration.nanoseconds / 1e9):.4f} Hz{wait_msg}'
+                    f'Current loop rate is {1.0 / (cycle_duration.nanoseconds / 1e9):.4f} '
+                    f'Hz{wait_msg}'
                 )
 
             goal_handle.succeed(result)
@@ -593,6 +651,17 @@ class PlannerServer(LifecycleNode):
         Execute callback for ComputePathThroughPoses action.
 
         Concatenates paths between consecutive waypoints.
+
+        Parameters
+        ----------
+        goal_handle : ServerGoalHandle
+            The action goal handle containing the request.
+
+        Returns
+        -------
+        ComputePathThroughPoses.Result
+            The result with the concatenated path or an error code.
+
         """
         self.get_logger().info('Computing path through poses')
         result = ComputePathThroughPoses.Result()
@@ -640,7 +709,8 @@ class PlannerServer(LifecycleNode):
                 raise PlannerTFError('Unable to get start pose')
 
             # Create cancel checker
-            def cancel_checker(): return goal_handle.is_cancel_requested
+            def cancel_checker():
+                return goal_handle.is_cancel_requested
 
             # Initialize concatenated path
             concat_path = Path()
@@ -689,7 +759,8 @@ class PlannerServer(LifecycleNode):
                 # Validate path
                 if not curr_path.poses:
                     exception = NoValidPathCouldBeFound(
-                        f"Planning failed for planner '{planner_id}' at waypoint {i}: No valid path found"
+                        f"Planning failed for planner '{planner_id}' at waypoint {i}: "
+                        f'No valid path found'
                     )
                     if i == 0 or not partial_plan_allowed:
                         raise exception
@@ -732,13 +803,14 @@ class PlannerServer(LifecycleNode):
             # Check if we missed the desired rate
             if max_duration > 0.0 and cycle_duration.nanoseconds / 1e9 > max_duration:
                 wait_msg = (
-                    f" Waited {costmap_wait:.2f}s for costmap update."
-                    if costmap_wait > 0.0 else ""
+                    f' Waited {costmap_wait: .2f}s for costmap update.'
+                    if costmap_wait > 0.0 else ''
                 )
                 self.get_logger().warning(
                     f'Planner loop missed its desired rate of '
                     f'{1.0 / max_duration:.4f} Hz. '
-                    f'Current loop rate is {1.0 / (cycle_duration.nanoseconds / 1e9):.4f} Hz{wait_msg}'
+                    f'Current loop rate is {1.0 / (cycle_duration.nanoseconds / 1e9):.4f} '
+                    f'Hz{wait_msg}'
                 )
 
             goal_handle.succeed(result)
@@ -818,17 +890,18 @@ class PlannerServer(LifecycleNode):
         ------
         PlannerTimedOut
             If timeout is exceeded.
+
         """
+        assert self._param_handler is not None  # set in on_configure
         with self._param_handler.get_mutex():
             params = self._param_handler.get_parameters()
             timeout = params.costmap_update_timeout
 
         if self._costmap_ros and timeout.nanoseconds > 0:
-            import time as time_module
-            waiting_start = time_module.time()
+            waiting_start = time.time()
             try:
                 self._costmap_ros.wait_until_current(timeout)
-                return time_module.time() - waiting_start
+                return time.time() - waiting_start
             except Exception as ex:
                 raise PlannerTimedOut(f'Costmap update timeout: {ex}')
 
@@ -853,6 +926,7 @@ class PlannerServer(LifecycleNode):
         -------
         bool
             True if transformation successful, False otherwise.
+
         """
         if not self._costmap_ros:
             return False
@@ -885,6 +959,7 @@ class PlannerServer(LifecycleNode):
         ----------
         path : Path
             The path to publish.
+
         """
         if self._plan_publisher and path.poses:
             try:
@@ -921,6 +996,7 @@ class PlannerServer(LifecycleNode):
         -------
         Path
             The computed path.
+
         """
         # Resolve planner: use the single available one when ID is omitted
         if planner_id not in self._planners:
@@ -938,6 +1014,7 @@ class PlannerServer(LifecycleNode):
                 )
 
         # Lock parameter handler to safely access parameters
+        assert self._param_handler is not None  # set in on_configure
         with self._param_handler.get_mutex():
             params = self._param_handler.get_parameters()
             max_planner_duration = params.max_planner_duration
@@ -973,7 +1050,11 @@ class PlannerServer(LifecycleNode):
         """
         Look up the current robot pose from TF.
 
-        Returns None if TF lookup fails.
+        Returns
+        -------
+        Optional[PoseStamped]
+            The current robot pose in the map frame, or None if TF lookup fails.
+
         """
         if self._tf_buffer is None:
             self.get_logger().warning(
@@ -982,8 +1063,6 @@ class PlannerServer(LifecycleNode):
             return None
 
         try:
-            import tf2_geometry_msgs  # noqa: F401 (registers the conversion)
-            from geometry_msgs.msg import TransformStamped
             transform: TransformStamped = self._tf_buffer.lookup_transform(
                 'map',
                 'base_link',
@@ -1010,8 +1089,24 @@ class PlannerServer(LifecycleNode):
         ex: Exception,
         result: Optional[object] = None,
     ) -> None:
-        """Log a standardised warning for planner exceptions, including yaw angles."""
-        import io
+        """
+        Log a standardized warning for planner exceptions, including yaw angles.
+
+        Parameters
+        ----------
+        start : Optional[PoseStamped]
+            Start pose, or None if not available.
+        goal : Optional[PoseStamped]
+            Goal pose, or None if not available.
+        planner_id : str
+            Identifier of the planner that raised the exception.
+        ex : Exception
+            The exception to report.
+        result : Optional[object]
+            Action result object; if it has an ``error_msg`` attribute it is
+            populated with the warning message.
+
+        """
 
         def _quat_to_yaw(q) -> float:
             """Convert a geometry_msgs Quaternion to yaw (rad)."""
@@ -1051,7 +1146,20 @@ class PlannerServer(LifecycleNode):
 
     @staticmethod
     def _build_duration_msg(seconds: float) -> DurationMsg:
-        """Convert float seconds to builtin_interfaces/Duration."""
+        """
+        Convert float seconds to builtin_interfaces/Duration.
+
+        Parameters
+        ----------
+        seconds : float
+            Duration in seconds.
+
+        Returns
+        -------
+        DurationMsg
+            The equivalent ``builtin_interfaces/Duration`` message.
+
+        """
         msg = DurationMsg()
         msg.sec = int(seconds)
         msg.nanosec = int((seconds - msg.sec) * 1e9)

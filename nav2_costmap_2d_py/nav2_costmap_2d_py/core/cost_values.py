@@ -13,7 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Cost value constants for the nav2_costmap_2d Python port."""
+"""
+Cost value constants for the nav2_costmap_2d Python port.
+
+It mirrors the nav2_costmap_2d cost_values.hpp from the C++ implementation,
+defining the special cost values used throughout the costmap.
+"""
 
 # No information / unknown cell
 NO_INFORMATION: int = 255

@@ -25,30 +25,26 @@ Plugin type string:
     ``"nav2_costmap_2d_py/InflationLayer"``
 """
 
-import math
 import heapq
-from typing import Dict, List, Optional, Tuple
+import math
+from typing import Any, List, Tuple
 
-from nav2_costmap_2d_py.core.layer import Layer
+from nav2_costmap_2d_py.core.cost_values import INSCRIBED_INFLATED_OBSTACLE, LETHAL_OBSTACLE
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
-from nav2_costmap_2d_py.core.cost_values import (
-    FREE_SPACE, INSCRIBED_INFLATED_OBSTACLE, LETHAL_OBSTACLE, NO_INFORMATION,
-)
+from nav2_costmap_2d_py.core.layer import Layer
 
 
 class InflationLayer(Layer):
     """
-    Inflates lethal obstacles with an exponential cost decay.
+    Convolve the costmap by the robot's radius or footprint to inflate obstacles.
 
-    Parameters (under ``<name>.``):
-      enabled              (bool,  default True)
-      inflation_radius     (float, default 0.55 m)
-      cost_scaling_factor  (float, default 10.0)
-      inflate_unknown      (bool,  default False)
-      inflate_around_unknown (bool, default False)
+    Inflates lethal obstacles outward by the inflation radius, assigning
+    exponentially-decayed costs as a function of distance to the nearest
+    obstacle.
     """
 
     def __init__(self) -> None:
+        """Initialize inflation layer defaults."""
         super().__init__()
         self._inflation_radius = 0.55
         self._cost_scaling_factor = 10.0
@@ -68,10 +64,11 @@ class InflationLayer(Layer):
     # ------------------------------------------------------------------
 
     def on_initialize(self) -> None:
+        """Initialize the layer on startup: read the inflation parameters."""
         node = self._node
         name = self._name
 
-        def _p(param, default):
+        def _p(param: str, default: Any) -> Any:
             full = f'{name}.{param}'
             if not node.has_parameter(full):
                 node.declare_parameter(full, default)
@@ -92,7 +89,7 @@ class InflationLayer(Layer):
         )
 
     def on_footprint_changed(self) -> None:
-        """Recompute cell inflation radius when footprint changes."""
+        """Process footprint changes, recomputing the cell inflation radius and caches."""
         if self._layered_costmap is None:
             return
         res = self._layered_costmap.get_costmap().resolution
@@ -103,8 +100,28 @@ class InflationLayer(Layer):
             self._compute_caches(res)
         self._need_reinflation = True
 
-    def update_bounds(self, robot_x, robot_y, robot_yaw,
-                      min_x, min_y, max_x, max_y) -> None:
+    def update_bounds(
+        self,
+        robot_x: float,
+        robot_y: float,
+        robot_yaw: float,
+        min_x: List[float],
+        min_y: List[float],
+        max_x: List[float],
+        max_y: List[float],
+    ) -> None:
+        """
+        Update the bounds of the master costmap by this layer's update dimensions.
+
+        Parameters
+        ----------
+        robot_x, robot_y, robot_yaw : float
+            Current robot pose in the global frame.
+        min_x, min_y, max_x, max_y : list of float
+            Single-element lists holding the update window bounds, expanded in
+            place.
+
+        """
         if not self._enabled:
             return
         if self._need_reinflation:
@@ -118,9 +135,27 @@ class InflationLayer(Layer):
             max_y[0] = max(max_y[0], oy + master.size_y_meters)
             self._need_reinflation = False
 
-    def update_costs(self, master_grid: Costmap2D,
-                     min_i: int, min_j: int,
-                     max_i: int, max_j: int) -> None:
+    def update_costs(
+        self,
+        master_grid: Costmap2D,
+        min_i: int,
+        min_j: int,
+        max_i: int,
+        max_j: int
+    ) -> None:
+        """
+        Update the costs in the master costmap within the given window.
+
+        Parameters
+        ----------
+        master_grid : Costmap2D
+            The master costmap to inflate.
+        min_i, min_j : int
+            Lower x/y boundary of the window to update, in cells.
+        max_i, max_j : int
+            Upper x/y boundary of the window to update, in cells.
+
+        """
         if not self._enabled:
             return
 
@@ -134,6 +169,7 @@ class InflationLayer(Layer):
         self._current = True
 
     def reset(self) -> None:
+        """Reset this costmap layer, forcing a full re-inflation on the next cycle."""
         self._need_reinflation = True
         self._current = False
 
@@ -143,7 +179,18 @@ class InflationLayer(Layer):
 
     def _cost_at_distance(self, distance: float) -> int:
         """
-        Return inflated cost at a given distance from an obstacle.
+        Given a distance from an obstacle, compute the inflated cost.
+
+        Parameters
+        ----------
+        distance : float
+            The distance from the obstacle, in metres.
+
+        Returns
+        -------
+        int
+            The computed cost value.
+
         """
         if distance == 0.0:
             return LETHAL_OBSTACLE
@@ -155,7 +202,16 @@ class InflationLayer(Layer):
         return max(1, cost) if cost > 0 else 0
 
     def _compute_caches(self, resolution: float) -> None:
-        """Pre-compute cost and distance caches."""
+        """
+        Generate the cost and distance lookup tables for distance-to-cost mapping.
+
+        Parameters
+        ----------
+        resolution : float
+            The costmap resolution in meters/cell, used to convert cell offsets
+            to world distances.
+
+        """
         r = self._cell_inflation_radius + 2
         size = (2 * r + 1) ** 2
         self._cached_distances = [0.0] * size
@@ -174,15 +230,26 @@ class InflationLayer(Layer):
     def _inflate(
         self,
         master: Costmap2D,
-        min_i: int, min_j: int,
-        max_i: int, max_j: int,
+        min_i: int,
+        min_j: int,
+        max_i: int,
+        max_j: int,
     ) -> None:
         """
         Inflate lethal cells using a min-heap (distance-ordered BFS).
+
+        Parameters
+        ----------
+        master : Costmap2D
+            The master costmap whose cells are inflated in place.
+        min_i, min_j : int
+            Lower x/y boundary of the window to inflate, in cells.
+        max_i, max_j : int
+            Upper x/y boundary of the window to inflate, in cells.
+
         """
         sx = master.size_x
         arr = master.get_char_map()
-        r = self._cell_inflation_radius
         res = master.resolution
 
         seen = set()

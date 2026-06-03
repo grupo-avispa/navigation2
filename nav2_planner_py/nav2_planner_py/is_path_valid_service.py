@@ -17,37 +17,31 @@
 IsPathValidService for Nav2 Planner Server.
 
 It mirrors the nav2_planner::IsPathValidService from the C++ implementation.
-Service to determine if a path is still valid given the current costmap state.
+Hosts an IsPathValid service that determines whether a path is still valid
+given the current costmap state.
 """
 
 import math
-from typing import List, Optional, Tuple
+import re
+from typing import Any, List, Optional, Tuple
 
+from geometry_msgs.msg import PoseStamped
+from nav2_costmap_2d_py.core.cost_values import (FREE_SPACE, INSCRIBED_INFLATED_OBSTACLE,
+                                                 LETHAL_OBSTACLE, NO_INFORMATION)
+from nav2_msgs.srv import IsPathValid
+from nav_msgs.msg import Path
 import rclpy
 from rclpy.duration import Duration
 from rclpy.lifecycle import LifecycleNode
-from typing import Any, Optional
-
-from geometry_msgs.msg import PoseStamped
-from nav_msgs.msg import Path
-from nav2_msgs.srv import IsPathValid
-
-# Cost values from nav2_costmap_2d
-FREE_SPACE = 0
-LETHAL_OBSTACLE = 254
-INSCRIBED_INFLATED_OBSTACLE = 253
-NO_INFORMATION = 255
 
 
 class IsPathValidService:
     """
     Service to determine if a path is still valid given the current costmap state.
 
-    Responsibilities:
-        - Create and manage IsPathValid ROS2 service
-        - Validate paths against the costmap
-        - Check for collisions using footprint or radius-based detection
-        - Handle layer-specific costmap checking
+    Creates and manages an IsPathValid ROS2 service, validates paths against
+    the current costmap using footprint- or radius-based collision detection,
+    and supports layer-specific costmap checking.
     """
 
     def __init__(
@@ -57,21 +51,22 @@ class IsPathValidService:
         costmap_update_timeout: Duration,
     ) -> None:
         """
-        Initialize the IsPathValidService.
+        Initialize an IsPathValidService instance.
 
         Parameters
         ----------
         node : LifecycleNode
-            The ROS2 lifecycle node for service creation.
+            Lifecycle node pointer used for service creation.
         costmap_ros : Costmap2DROS
-            The costmap ROS wrapper for collision checking.
+            Costmap ROS wrapper used for collision checking and robot pose.
         costmap_update_timeout : Duration
-            Timeout for waiting for costmap updates.
+            Timeout for waiting for costmap updates before path validation.
+
         """
         self._node = node
         self._costmap_ros = costmap_ros
         self._costmap_update_timeout = costmap_update_timeout
-        self._logger = rclpy.logging.get_logger("is_path_valid_service")
+        self._logger = rclpy.logging.get_logger('is_path_valid_service')
         self._costmap = None
         self._service: Optional[Any] = None
 
@@ -102,15 +97,21 @@ class IsPathValidService:
         """
         Get the costmap to check based on the layer name.
 
+        When the layer name is empty the full (master) costmap is returned.
+        Otherwise the layered costmap plugins are searched by name and the first
+        matching layer that exposes a costmap is returned.
+
         Parameters
         ----------
         layer_name : str
-            Name of the layer to check, or empty for full costmap.
+            Name of the layer to check, or empty string for the full costmap.
 
         Returns
         -------
         Costmap2D or None
-            Pointer to the costmap to check, or None if layer not found.
+            The costmap to check, or ``None`` if the requested layer is not found
+            or does not provide a costmap.
+
         """
         if not layer_name:
             return self._costmap
@@ -138,16 +139,24 @@ class IsPathValidService:
         """
         Get the footprint to use for collision checking.
 
+        If a custom footprint string is provided it is parsed and radius-based checking
+        is disabled. Otherwise the robot footprint configured in the costmap is used,
+        or radius-based checking is applied when the costmap is configured that way.
+
         Parameters
         ----------
         footprint_string : str
-            Custom footprint string, or empty to use robot's footprint.
+            Custom footprint string in ``[[x1,y1],[x2,y2],...]`` format, or empty
+            string to use the robot footprint from the costmap configuration.
 
         Returns
         -------
         Tuple[List[Tuple[float, float]], bool]
-            (footprint, use_radius) where footprint is a list of (x, y) points
-            and use_radius indicates if radius-based checking should be used.
+            A tuple ``(footprint, use_radius)`` where *footprint* is a list of
+            ``(x, y)`` points relative to the robot centre, and *use_radius*
+            indicates whether radius-based collision checking should be used
+            instead of the footprint.
+
         """
         use_radius = self._costmap_ros.get_use_radius()
 
@@ -174,30 +183,33 @@ class IsPathValidService:
         """
         Parse a footprint string into a list of (x, y) points.
 
+        Extracts numeric coordinate pairs from the standard Nav2 footprint string format.
+
         Parameters
         ----------
         footprint_string : str
-            String in format "[[x1, y1], [x2, y2], ...]"
+            Footprint specification in ``[[x1,y1],[x2,y2],...]`` format.
 
         Returns
         -------
         List[Tuple[float, float]]
-            List of (x, y) coordinate pairs.
+            Ordered list of ``(x, y)`` coordinate pairs defining the footprint
+            polygon relative to the robot centre.
 
         Raises
         ------
         ValueError
-            If the footprint string is invalid.
-        """
-        import re
+            If the footprint string is malformed or contains an odd number of
+            coordinates.
 
+        """
         # Simple parser for footprint format
         footprint_string = footprint_string.strip()
         if not footprint_string.startswith('[[') or not footprint_string.endswith(']]'):
             raise ValueError('Invalid footprint format')
 
         # Extract numbers
-        numbers = re.findall(r"-?\d+\.?\d*", footprint_string)
+        numbers = re.findall(r'-?\d+\.?\d*', footprint_string)
         if len(numbers) % 2 != 0:
             raise ValueError('Odd number of coordinates')
 
@@ -213,17 +225,21 @@ class IsPathValidService:
         """
         Find the closest point on the path to the current pose.
 
+        The lethal check starts at this index to avoid checking poses that have
+        already been passed and may have become occupied.
+
         Parameters
         ----------
         current_pose : PoseStamped
-            The current robot pose.
+            The current robot pose in the global frame.
         path : Path
-            The path to search.
+            The path to search for the closest point.
 
         Returns
         -------
         int
-            Index of the closest pose in the path.
+            Index of the closest pose in the path to the current robot position.
+
         """
         closest_point_index = 0
         closest_distance = float('inf')
@@ -232,8 +248,7 @@ class IsPathValidService:
         for i, pose in enumerate(path.poses):
             path_point = pose.pose.position
             distance = math.sqrt(
-                (current_point.x - path_point.x) ** 2
-                + (current_point.y - path_point.y) ** 2
+                (current_point.x - path_point.x) ** 2 + (current_point.y - path_point.y) ** 2
             )
 
             if distance < closest_distance:
@@ -248,17 +263,24 @@ class IsPathValidService:
         """
         Service callback to determine if the path is still valid.
 
+        Checks each path pose from the closest point to the robot up to
+        ``max_lookahead_distance`` for collisions using either radius- or
+        footprint-based cost evaluation on the requested costmap layer.
+
         Parameters
         ----------
         request : IsPathValid.Request
-            The service request containing the path to validate.
+            The service request containing the path and validation parameters
+            (layer name, footprint, lookahead distance, cost thresholds, etc.).
         response : IsPathValid.Response
-            The service response to be filled.
+            The service response populated with ``is_valid``, ``success``, and
+            ``invalid_pose_indices``.
 
         Returns
         -------
         IsPathValid.Response
             The response with validation results.
+
         """
         response.success = True
         response.is_valid = True
@@ -348,8 +370,7 @@ class IsPathValidService:
 
             # Handle unknown information
             if (
-                cost == NO_INFORMATION
-                and request.consider_unknown_as_obstacle
+                cost == NO_INFORMATION and request.consider_unknown_as_obstacle
             ):
                 cost = LETHAL_OBSTACLE
             elif cost == NO_INFORMATION:
@@ -382,19 +403,24 @@ class IsPathValidService:
         """
         Get cost at a pose using radius-based collision checking.
 
+        Maps world coordinates to costmap cell indices and returns the cell cost,
+        falling back to ``LETHAL_OBSTACLE`` when the pose is outside the costmap bounds.
+
         Parameters
         ----------
-        costmap
-            The costmap to check.
+        costmap : Costmap2D
+            The costmap to query.
         x : float
-            X coordinate in world frame.
+            X coordinate in the world (global) frame.
         y : float
-            Y coordinate in world frame.
+            Y coordinate in the world (global) frame.
 
         Returns
         -------
         int
-            Cost value at the given pose.
+            Cost value at the given pose, or ``LETHAL_OBSTACLE`` if the pose is
+            outside the costmap bounds or a mapping error occurs.
+
         """
         try:
             mx, my = costmap.worldToMap(x, y)
@@ -413,23 +439,29 @@ class IsPathValidService:
         """
         Get cost at a pose using footprint-based collision checking.
 
+        Each footprint vertex is rotated and translated to the world frame and
+        the maximum cell cost is returned, with an early exit on ``LETHAL_OBSTACLE``.
+
         Parameters
         ----------
-        costmap
-            The costmap to check.
+        costmap : Costmap2D
+            The costmap to query.
         x : float
-            X coordinate in world frame.
+            X coordinate of the robot centre in the world (global) frame.
         y : float
-            Y coordinate in world frame.
+            Y coordinate of the robot centre in the world (global) frame.
         theta : float
-            Orientation angle in radians.
+            Robot heading (yaw) in radians.
         footprint : List[Tuple[float, float]]
-            List of (x, y) footprint points relative to robot center.
+            List of ``(x, y)`` footprint vertices relative to the robot centre.
 
         Returns
         -------
         int
-            Cost value (max cost of any footprint point).
+            Maximum cost found across all footprint vertices, or
+            ``LETHAL_OBSTACLE`` if any vertex is outside the costmap bounds or
+            an error occurs.
+
         """
         max_cost = FREE_SPACE
 
@@ -470,19 +502,27 @@ class IsPathValidService:
         """
         Find the end index based on integrated distance along the path.
 
+        Limits path validation to a lookahead window when ``max_lookahead_distance > 0``.
+
         Parameters
         ----------
         poses : List[PoseStamped]
-            List of poses in the path.
+            Ordered list of poses constituting the path.
         start_index : int
-            Starting index.
+            Index of the first pose to include in the distance integration
+            (typically the closest point to the robot).
         max_distance : float
-            Maximum distance to look ahead.
+            Maximum cumulative Euclidean distance (metres) to look ahead from
+            ``start_index``.
 
         Returns
         -------
         int
-            Index after traveling max_distance from start_index.
+            Exclusive end index such that the arc length from ``start_index`` to
+            ``end_index - 1`` does not exceed ``max_distance``. Returns
+            ``len(poses)`` when the full remaining path is shorter than
+            ``max_distance``.
+
         """
         accumulated_distance = 0.0
 
@@ -507,13 +547,15 @@ class IsPathValidService:
 
         Parameters
         ----------
-        orientation
-            Quaternion orientation (with x, y, z, w fields).
+        orientation : Quaternion
+            Quaternion orientation message with ``x``, ``y``, ``z``, and ``w``
+            fields (e.g. ``geometry_msgs.msg.Quaternion``).
 
         Returns
         -------
         float
-            Yaw angle in radians.
+            Yaw angle extracted from the quaternion, in radians.
+
         """
         # Using the formula for extracting yaw from quaternion
         x = orientation.x
@@ -521,10 +563,7 @@ class IsPathValidService:
         z = orientation.z
         w = orientation.w
 
-        # Calculate yaw (rotation around z-axis)
-        sin_roll = 2.0 * (w * x + y * z)
-        cos_roll = 1.0 - 2.0 * (x * x + y * y)
-        sin_pitch = 2.0 * (w * y - z * x)
+        # Calculate yaw
         sin_yaw = 2.0 * (w * z + x * y)
         cos_yaw = 1.0 - 2.0 * (y * y + z * z)
 

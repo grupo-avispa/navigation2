@@ -24,21 +24,13 @@ Plugin type string:
     ``"nav2_costmap_2d_py/KeepoutFilter"``
 """
 
-from rclpy.qos import (
-    QoSProfile,
-    QoSDurabilityPolicy,
-    QoSHistoryPolicy,
-    QoSReliabilityPolicy,
-)
-from typing import Any, Optional
+from typing import Any, List, Optional
 
-from nav_msgs.msg import OccupancyGrid
-
-from nav2_costmap_2d_py.core.costmap_layer import CostmapLayer
+from nav2_costmap_2d_py.core.cost_values import FREE_SPACE, LETHAL_OBSTACLE, NO_INFORMATION
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
-from nav2_costmap_2d_py.core.cost_values import (
-    FREE_SPACE, LETHAL_OBSTACLE, NO_INFORMATION,
-)
+from nav2_costmap_2d_py.core.costmap_layer import CostmapLayer
+from nav_msgs.msg import OccupancyGrid
+from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 
 # OccupancyGrid threshold: cells >= this value are kept-out
 _KEEPOUT_THRESHOLD = 99
@@ -48,15 +40,14 @@ _EPSILON = 1e-6
 
 class KeepoutFilter(CostmapLayer):
     """
-    Applies a binary keepout mask onto the master costmap.
+    Read in a keepout mask and mark keepout regions in the map.
 
-    Parameters (under ``<name>.``):
-      enabled          (bool, default True)
-      filter_info_topic (str, default 'costmap_filter_info')
-      mask_topic        (str, default 'keepout_filter_mask')
+    Prevents planning or control in restricted areas by applying a binary
+    keepout mask (from an OccupancyGrid) onto the master costmap.
     """
 
     def __init__(self) -> None:
+        """Initialize keepout filter defaults."""
         super().__init__()
         self._filter_info_topic = 'costmap_filter_info'
         self._mask_topic = 'keepout_filter_mask'
@@ -66,10 +57,11 @@ class KeepoutFilter(CostmapLayer):
         self._has_new_data = False
 
     def on_initialize(self) -> None:
+        """Initialize the filter on startup: read parameters and subscribe to the mask topic."""
         node = self._node
         name = self._name
 
-        def _p(param, default):
+        def _p(param: str, default: Any) -> Any:
             full = f'{name}.{param}'
             if not node.has_parameter(full):
                 node.declare_parameter(full, default)
@@ -101,9 +93,26 @@ class KeepoutFilter(CostmapLayer):
 
     def update_bounds(
         self,
-        robot_x, robot_y, robot_yaw,
-        min_x, min_y, max_x, max_y,
+        robot_x: float,
+        robot_y: float,
+        robot_yaw: float,
+        min_x: List[float],
+        min_y: List[float],
+        max_x: List[float],
+        max_y: List[float],
     ) -> None:
+        """
+        Update the bounds of the master costmap by this filter's update dimensions.
+
+        Parameters
+        ----------
+        robot_x, robot_y, robot_yaw : float
+            Current robot pose in the global frame.
+        min_x, min_y, max_x, max_y : list of float
+            Single-element lists holding the update window bounds, expanded in
+            place.
+
+        """
         if not self._enabled or not self._has_new_data:
             return
         master = self._layered_costmap.get_costmap()
@@ -117,9 +126,24 @@ class KeepoutFilter(CostmapLayer):
     def update_costs(
         self,
         master_grid: Costmap2D,
-        min_i: int, min_j: int,
-        max_i: int, max_j: int,
+        min_i: int,
+        min_j: int,
+        max_i: int,
+        max_j: int,
     ) -> None:
+        """
+        Process the keepout layer, applying the mask onto the master costmap window.
+
+        Parameters
+        ----------
+        master_grid : Costmap2D
+            The master costmap to update.
+        min_i, min_j : int
+            Lower x/y boundary of the window to update, in cells.
+        max_i, max_j : int
+            Upper x/y boundary of the window to update, in cells.
+
+        """
         if not self._enabled or not self._mask_received:
             return
         self.update_with_max(master_grid, min_i, min_j, max_i, max_j)
@@ -127,15 +151,32 @@ class KeepoutFilter(CostmapLayer):
         self._current = True
 
     def reset(self) -> None:
+        """Reset the costmap filter, forcing a re-apply of the mask on the next cycle."""
         self._has_new_data = True
         self._current = False
 
     def is_clearable(self) -> bool:
+        """
+        Return whether clearing operations should be processed on this filter.
+
+        Returns
+        -------
+        bool
+            Always ``False``; keepout regions are never cleared.
+
+        """
         return False
 
     def _mask_callback(self, msg: OccupancyGrid) -> None:
         """
-        Receive the keepout mask and copy lethal cells into this layer.
+        Handle the filter mask: copy keepout (lethal) cells from the mask into this layer.
+
+        Parameters
+        ----------
+        msg : OccupancyGrid
+            The incoming keepout mask, resizing this layer if its geometry
+            changed.
+
         """
         new_w = msg.info.width
         new_h = msg.info.height

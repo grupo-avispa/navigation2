@@ -17,21 +17,12 @@
 Costmap2D for nav2_costmap_2d_py.
 
 Pure-Python 2D costmap grid.
-The grid is stored as a flat ``bytearray`` of length ``size_x * size_y``.
-Cell (mx, my) maps to index ``my * size_x + mx``.
-
-Coordinates
------------
-* World (wx, wy)  - metres in the global frame.
-* Map   (mx, my)  - integer cell indices (0 … size_x/y - 1).
-* Index           - flat array offset = my * size_x + mx.
-
 It mirrors the nav2_costmap_2d::Costmap2D from the C++ implementation.
 """
 
 import math
 import threading
-from typing import Tuple
+from typing import List, Tuple
 
 from nav2_costmap_2d_py.core.cost_values import FREE_SPACE
 
@@ -48,6 +39,25 @@ class Costmap2D:
         origin_y: float = 0.0,
         default_value: int = FREE_SPACE,
     ) -> None:
+        """
+        Construct a costmap.
+
+        Parameters
+        ----------
+        size_x : int
+            The x size of the map in cells.
+        size_y : int
+            The y size of the map in cells.
+        resolution : float
+            The resolution of the map in meters/cell.
+        origin_x : float
+            The x origin of the map.
+        origin_y : float
+            The y origin of the map.
+        default_value : int
+            Default background value used to fill the grid.
+
+        """
         self._mutex = threading.RLock()
         self._resolution = resolution
         self._origin_x = origin_x
@@ -65,12 +75,23 @@ class Costmap2D:
     # ------------------------------------------------------------------
 
     def _init_maps(self, size_x: int, size_y: int) -> None:
+        """
+        Initialize the costmap data structure.
+
+        Parameters
+        ----------
+        size_x : int
+            The x size to use for map initialization.
+        size_y : int
+            The y size to use for map initialization.
+
+        """
         self._size_x = size_x
         self._size_y = size_y
         self._costmap = bytearray(size_x * size_y)
 
     def reset_maps(self) -> None:
-        """Fill every cell with the default value."""
+        """Reset the costmap, filling every cell with the default (unknown) value."""
         for i in range(len(self._costmap)):
             self._costmap[i] = self._default_value
 
@@ -86,7 +107,26 @@ class Costmap2D:
         origin_x: float,
         origin_y: float,
     ) -> None:
-        """Resize (and reinitialize) the costmap."""
+        """
+        Resize the costmap.
+
+        Reinitializes the grid with the new dimensions and resets it to the
+        default value.
+
+        Parameters
+        ----------
+        size_x : int
+            The new x size of the map in cells.
+        size_y : int
+            The new y size of the map in cells.
+        resolution : float
+            The new resolution of the map in meters/cell.
+        origin_x : float
+            The new x origin of the map.
+        origin_y : float
+            The new y origin of the map.
+
+        """
         with self._mutex:
             self._resolution = resolution
             self._origin_x = origin_x
@@ -100,12 +140,21 @@ class Costmap2D:
 
     def world_to_map(self, wx: float, wy: float) -> Tuple[bool, int, int]:
         """
-        Convert world coordinates to map cell indices.
+        Convert from world coordinates to map coordinates.
+
+        Parameters
+        ----------
+        wx : float
+            The x world coordinate.
+        wy : float
+            The y world coordinate.
 
         Returns
         -------
         (ok, mx, my)
-            ok is False if the world point is outside the map bounds.
+            ``ok`` is True if the conversion was successful (legal bounds),
+            False otherwise; ``mx``/``my`` are the associated map coordinates.
+
         """
         if wx < self._origin_x or wy < self._origin_y:
             return False, 0, 0
@@ -117,7 +166,20 @@ class Costmap2D:
 
     def world_to_map_enforced_bounds(self, wx: float, wy: float) -> Tuple[int, int]:
         """
-        Convert world → map, clamping to valid bounds.
+        Convert from world coordinates to map coordinates, constraining results to legal bounds.
+
+        Parameters
+        ----------
+        wx : float
+            The x world coordinate.
+        wy : float
+            The y world coordinate.
+
+        Returns
+        -------
+        (mx, my)
+            The associated map coordinates, guaranteed to lie within the map.
+
         """
         mx = int((wx - self._origin_x) / self._resolution)
         my = int((wy - self._origin_y) / self._resolution)
@@ -126,7 +188,22 @@ class Costmap2D:
         return mx, my
 
     def map_to_world(self, mx: int, my: int) -> Tuple[float, float]:
-        """Convert map cell centre to world coordinates."""
+        """
+        Convert from map coordinates to world coordinates (cell centre).
+
+        Parameters
+        ----------
+        mx : int
+            The x map coordinate.
+        my : int
+            The y map coordinate.
+
+        Returns
+        -------
+        (wx, wy)
+            The associated world coordinates.
+
+        """
         wx = self._origin_x + (mx + 0.5) * self._resolution
         wy = self._origin_y + (my + 0.5) * self._resolution
         return wx, wy
@@ -136,9 +213,39 @@ class Costmap2D:
     # ------------------------------------------------------------------
 
     def get_index(self, mx: int, my: int) -> int:
+        """
+        Given two map coordinates, compute the associated flat array index.
+
+        Parameters
+        ----------
+        mx : int
+            The x coordinate.
+        my : int
+            The y coordinate.
+
+        Returns
+        -------
+        int
+            The associated index.
+
+        """
         return my * self._size_x + mx
 
     def index_to_cells(self, index: int) -> Tuple[int, int]:
+        """
+        Given an index, compute the associated map coordinates.
+
+        Parameters
+        ----------
+        index : int
+            The flat array index.
+
+        Returns
+        -------
+        (mx, my)
+            The associated map coordinates.
+
+        """
         my = index // self._size_x
         mx = index % self._size_x
         return mx, my
@@ -148,13 +255,50 @@ class Costmap2D:
     # ------------------------------------------------------------------
 
     def get_cost(self, mx: int, my: int) -> int:
+        """
+        Get the cost of a cell in the costmap.
+
+        Parameters
+        ----------
+        mx : int
+            The x coordinate of the cell.
+        my : int
+            The y coordinate of the cell.
+
+        Returns
+        -------
+        int
+            The cost of the cell.
+
+        """
         return self._costmap[self.get_index(mx, my)]
 
     def set_cost(self, mx: int, my: int, cost: int) -> None:
+        """
+        Set the cost of a cell in the costmap.
+
+        Parameters
+        ----------
+        mx : int
+            The x coordinate of the cell.
+        my : int
+            The y coordinate of the cell.
+        cost : int
+            The cost to set the cell to.
+
+        """
         self._costmap[self.get_index(mx, my)] = cost
 
     def get_char_map(self) -> bytearray:
-        """Return a reference to the raw costmap array."""
+        """
+        Return the underlying array used as the costmap.
+
+        Returns
+        -------
+        bytearray
+            The underlying array storing the cost values.
+
+        """
         return self._costmap
 
     # ------------------------------------------------------------------
@@ -168,7 +312,24 @@ class Costmap2D:
         dx0: int, dy0: int,
     ) -> bool:
         """
-        Copy a rectangular window from *source* into this costmap.
+        Copy the ``(sx0, sy0)..(sxn, syn)`` window from a source costmap into this one.
+
+        Parameters
+        ----------
+        source : Costmap2D
+            Source costmap where the window will be copied from.
+        sx0, sy0 : int
+            Lower x/y boundary of the source window to copy, in cells.
+        sxn, syn : int
+            Upper x/y boundary of the source window to copy, in cells.
+        dx0, dy0 : int
+            Lower x/y boundary of the destination window to copy into, in cells.
+
+        Returns
+        -------
+        bool
+            True if the copy succeeded, False otherwise.
+
         """
         win_w = sxn - sx0
         win_h = syn - sy0
@@ -186,14 +347,32 @@ class Costmap2D:
         return True
 
     def reset_map(self, x0: int, y0: int, xn: int, yn: int) -> None:
-        """Reset a rectangular region to the default value."""
+        """
+        Reset the costmap within the given bounds to the default value.
+
+        Parameters
+        ----------
+        x0, y0 : int
+            Lower x/y boundary of the region to reset, in cells.
+        xn, yn : int
+            Upper x/y boundary of the region to reset, in cells.
+
+        """
         for y in range(y0, yn):
             for x in range(x0, xn):
                 self._costmap[self.get_index(x, y)] = self._default_value
 
     def move_map(self, new_origin_x: float, new_origin_y: float) -> None:
         """
-        Shift the map origin, keeping valid data where possible.
+        Move the origin of the costmap to a new location, keeping data where it can.
+
+        Parameters
+        ----------
+        new_origin_x : float
+            The x coordinate of the new origin.
+        new_origin_y : float
+            The y coordinate of the new origin.
+
         """
         cell_ox = int((new_origin_x - self._origin_x) / self._resolution)
         cell_oy = int((new_origin_y - self._origin_y) / self._resolution)
@@ -219,11 +398,25 @@ class Costmap2D:
 
     def set_convex_polygon_cost(
         self,
-        polygon: list,   # list of (x, y) world tuples
+        polygon: List[Tuple[float, float]],
         cost: int,
     ) -> bool:
         """
-        Set all cells inside a convex polygon to *cost*.
+        Set the cost of a convex polygon to a desired value.
+
+        Parameters
+        ----------
+        polygon : list of tuple of float
+            The polygon to perform the operation on, as a list of ``(x, y)``
+            world-coordinate tuples.
+        cost : int
+            The value to set the enclosed cells to.
+
+        Returns
+        -------
+        bool
+            True if the polygon was filled, False if it could not be filled.
+
         """
         if len(polygon) < 3:
             return False
@@ -233,8 +426,25 @@ class Costmap2D:
                 self._costmap[self.get_index(mx, my)] = cost
         return True
 
-    def _rasterize_polygon(self, polygon: list) -> list:
-        """Return all map cells inside (and on the boundary of) a polygon."""
+    def _rasterize_polygon(
+        self, polygon: List[Tuple[float, float]]
+    ) -> List[Tuple[int, int]]:
+        """
+        Get the map cells that fill a convex polygon.
+
+        Parameters
+        ----------
+        polygon : list of tuple of float
+            The polygon to rasterize, as a list of ``(x, y)`` world-coordinate
+            tuples.
+
+        Returns
+        -------
+        list of tuple of int
+            The map cells (``(mx, my)``) inside (and on the boundary of) the
+            polygon.
+
+        """
         pts = []
         for wx, wy in polygon:
             ok, mx, my = self.world_to_map(wx, wy)
@@ -262,11 +472,29 @@ class Costmap2D:
                     cells.append((x, y))
         return cells
 
-    def footprint_cost(self, x: float, y: float, theta: float, footprint: list) -> float:
+    def footprint_cost(
+        self, x: float, y: float, theta: float,
+        footprint: List[Tuple[float, float]],
+    ) -> float:
         """
         Compute the maximum cost under a rotated/translated footprint.
 
-        Returns -1.0 if any cell is out of bounds.
+        Parameters
+        ----------
+        x, y : float
+            World position of the robot to place the footprint at.
+        theta : float
+            Orientation of the robot, in radians.
+        footprint : list of tuple of float
+            The robot footprint as a list of ``(x, y)`` points in the robot
+            frame.
+
+        Returns
+        -------
+        float
+            The maximum cost found under the footprint, or ``-1.0`` if any cell
+            is out of bounds.
+
         """
         cos_th = math.cos(theta)
         sin_th = math.sin(theta)
@@ -288,42 +516,53 @@ class Costmap2D:
 
     @property
     def size_x(self) -> int:
+        """Accessor for the x size of the costmap in cells."""
         return self._size_x
 
     @property
     def size_y(self) -> int:
+        """Accessor for the y size of the costmap in cells."""
         return self._size_y
 
     @property
     def resolution(self) -> float:
+        """Accessor for the resolution of the costmap in meters/cell."""
         return self._resolution
 
     @property
     def origin_x(self) -> float:
+        """Accessor for the x origin of the costmap."""
         return self._origin_x
 
     @property
     def origin_y(self) -> float:
+        """Accessor for the y origin of the costmap."""
         return self._origin_y
 
     @property
     def size_x_meters(self) -> float:
+        """Accessor for the x size of the costmap in meters."""
         return self._size_x * self._resolution
 
     @property
     def size_y_meters(self) -> float:
+        """Accessor for the y size of the costmap in meters."""
         return self._size_y * self._resolution
 
     @property
     def default_value(self) -> int:
+        """Get the default background value of the costmap."""
         return self._default_value
 
     @default_value.setter
     def default_value(self, val: int) -> None:
+        """Set the default background value of the costmap."""
         self._default_value = val
 
     def get_mutex(self) -> threading.RLock:
+        """Return the recursive mutex guarding thread-safe access to the costmap."""
         return self._mutex
 
     def is_in_bounds(self, mx: int, my: int) -> bool:
+        """Return whether the map coordinates ``(mx, my)`` lie within the costmap bounds."""
         return 0 <= mx < self._size_x and 0 <= my < self._size_y

@@ -536,30 +536,28 @@ class Costmap2DROS(LifecycleNode):
         """Read all ROS2 parameters into member variables."""
         self.get_logger().debug('getParameters')
 
-        def _g(name: str) -> Any:
-            return self.get_parameter(name).value
-
-        self._always_send_full = _g('always_send_full_costmap')
-        self._map_vis_z = _g('map_vis_z')
-        self._footprint_str = _g('footprint')
-        self._footprint_padding = _g('footprint_padding')
-        self._global_frame = _g('global_frame')
-        self._map_height_meters = _g('height')
-        self._origin_x = _g('origin_x')
-        self._origin_y = _g('origin_y')
-        self._publish_frequency = _g('publish_frequency')
-        self._resolution = _g('resolution')
-        self._robot_base_frame = _g('robot_base_frame')
-        self._robot_radius = _g('robot_radius')
-        self._rolling_window = _g('rolling_window')
-        self._track_unknown_space = _g('track_unknown_space')
-        self._transform_tolerance = _g('transform_tolerance')
-        self._initial_transform_timeout = _g('initial_transform_timeout')
-        self._update_frequency = _g('update_frequency')
-        self._map_width_meters = _g('width')
-        self._plugin_names = _g('plugins')
-        self._filter_names = _g('filters')
-        self._subscribe_to_stamped_footprint = _g('subscribe_to_stamped_footprint')
+        self._always_send_full = self.get_parameter('always_send_full_costmap').value
+        self._map_vis_z = self.get_parameter('map_vis_z').value
+        self._footprint_str = self.get_parameter('footprint').value
+        self._footprint_padding = self.get_parameter('footprint_padding').value
+        self._global_frame = self.get_parameter('global_frame').value
+        self._map_height_meters = self.get_parameter('height').value
+        self._origin_x = self.get_parameter('origin_x').value
+        self._origin_y = self.get_parameter('origin_y').value
+        self._publish_frequency = self.get_parameter('publish_frequency').value
+        self._resolution = self.get_parameter('resolution').value
+        self._robot_base_frame = self.get_parameter('robot_base_frame').value
+        self._robot_radius = self.get_parameter('robot_radius').value
+        self._rolling_window = self.get_parameter('rolling_window').value
+        self._track_unknown_space = self.get_parameter('track_unknown_space').value
+        self._transform_tolerance = self.get_parameter('transform_tolerance').value
+        self._initial_transform_timeout = self.get_parameter('initial_transform_timeout').value
+        self._update_frequency = self.get_parameter('update_frequency').value
+        self._map_width_meters = self.get_parameter('width').value
+        self._plugin_names = self.get_parameter('plugins').value
+        self._filter_names = self.get_parameter('filters').value
+        self._subscribe_to_stamped_footprint = self.get_parameter(
+            'subscribe_to_stamped_footprint').value
 
         # Declare default plugin.plugin params if using defaults
         if self._plugin_names == self.DEFAULT_PLUGIN_NAMES:

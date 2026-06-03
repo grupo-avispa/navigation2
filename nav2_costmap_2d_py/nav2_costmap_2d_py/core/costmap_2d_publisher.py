@@ -24,64 +24,10 @@ It mirrors the nav2_costmap_2d::Costmap2DPublisher from the C++ implementation.
 from typing import Any, List, Optional
 
 from map_msgs.msg import OccupancyGridUpdate
-from nav2_costmap_2d_py.core.cost_values import (FREE_SPACE, INSCRIBED_INFLATED_OBSTACLE,
-                                                 LETHAL_OBSTACLE, NO_INFORMATION)
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
 from nav_msgs.msg import OccupancyGrid
 import numpy as np
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
-
-
-def _build_cost_translation_table() -> List[int]:
-    """
-    Build a 256-element lookup table from costmap cost to OccupancyGrid value.
-
-    Returns
-    -------
-    list of int
-        The lookup table indexed by cost value (0-255).
-
-    """
-    table = [0] * 256
-    table[FREE_SPACE] = 0
-    table[NO_INFORMATION] = -1
-    table[LETHAL_OBSTACLE] = 100
-    table[INSCRIBED_INFLATED_OBSTACLE] = 99
-    for i in range(1, 256):
-        if i not in (
-                FREE_SPACE, NO_INFORMATION, LETHAL_OBSTACLE, INSCRIBED_INFLATED_OBSTACLE):
-            # Linear mapping 1..252 → 1..98
-            table[i] = max(1, min(98, int(i * 100.0 / 255.0)))
-    return table
-
-
-_COST_TRANSLATION_TABLE = _build_cost_translation_table()
-# NumPy lookup table (int8) for vectorised cost->OccupancyGrid translation.
-_COST_TRANSLATION_TABLE_NP = np.asarray(_COST_TRANSLATION_TABLE, dtype=np.int8)
-
-
-def _translate_costmap(raw: bytearray) -> List[int]:
-    """
-    Vectorised replacement for ``[_COST_TRANSLATION_TABLE[c] for c in raw]``.
-
-    The per-cell Python list comprehension ran over the whole costmap on every
-    publish and held the GIL for hundreds of ms on large maps, freezing the
-    process and making the planner miss the BT's goal-acknowledge timeout. The
-    NumPy LUT index runs in C and releases the GIL.
-
-    Parameters
-    ----------
-    raw : bytearray
-        The raw costmap buffer of cost values (0-255).
-
-    Returns
-    -------
-    list of int
-        The translated OccupancyGrid values (-1, 0-100).
-
-    """
-    arr = np.frombuffer(raw, dtype=np.uint8)
-    return _COST_TRANSLATION_TABLE_NP[arr].tolist()
 
 
 class Costmap2DPublisher:
@@ -166,6 +112,55 @@ class Costmap2DPublisher:
         )
 
     # ------------------------------------------------------------------
+    # Cost translation (class-level LUT, built once at class definition)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_cost_translation_table() -> 'np.ndarray':
+        """
+        Build a 256-element lookup table from costmap cost to OccupancyGrid value.
+
+        Returns
+        -------
+        np.ndarray
+            int8 array of length 256 indexed by raw cost value.
+
+        """
+        table = np.zeros(256, dtype=np.int8)
+        idx = np.arange(1, 253)
+        table[idx] = (1 + (97 * (idx - 1)) // 251).astype(np.int8)
+        table[253] = 99    # INSCRIBED_INFLATED_OBSTACLE
+        table[254] = 100   # LETHAL_OBSTACLE
+        table[255] = -1    # NO_INFORMATION
+        return table
+
+    _COST_TRANSLATION_TABLE_NP: 'np.ndarray' = _build_cost_translation_table()
+
+    def _translate_costmap(self, raw: bytearray) -> List[int]:
+        """
+        Translate a raw costmap buffer to OccupancyGrid values.
+
+        The per-cell Python list comprehension ran over the whole costmap on every
+        publish and held the GIL for hundreds of ms on large maps, freezing the
+        process and making the planner miss the BT's goal-acknowledge timeout. The
+        NumPy LUT index runs in C and releases the GIL.
+
+        Parameters
+        ----------
+        raw : bytearray
+            The raw costmap buffer of cost values (0-255).
+
+        Returns
+        -------
+        list of int
+            The translated OccupancyGrid values (-1, 0-100).
+
+        """
+        return self._COST_TRANSLATION_TABLE_NP[
+            np.frombuffer(raw, dtype=np.uint8)
+        ].tolist()
+
+    # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
@@ -243,7 +238,7 @@ class Costmap2DPublisher:
         msg.info.origin.orientation.w = 1.0
 
         raw = costmap.get_char_map()
-        msg.data = _translate_costmap(raw)
+        msg.data = self._translate_costmap(raw)
         self._costmap_pub.publish(msg)
 
     def _publish_update(self, costmap: Costmap2D) -> None:
@@ -265,5 +260,5 @@ class Costmap2DPublisher:
         msg.width = costmap.size_x
         msg.height = costmap.size_y
         raw = costmap.get_char_map()
-        msg.data = _translate_costmap(raw)
+        msg.data = self._translate_costmap(raw)
         self._costmap_update_pub.publish(msg)

@@ -66,26 +66,21 @@ class ObstacleLayer(CostmapLayer):
     def on_initialize(self) -> None:
         """Initialize the layer: read parameters and subscribe to observation sources."""
         node = self._node
-        name = self._name
 
-        def _p(param: str, default: Any) -> Any:
-            full = f'{name}.{param}'
-            if not node.has_parameter(full):
-                node.declare_parameter(full, default)
-            return node.get_parameter(full).value
-
-        self._enabled = _p('enabled', True)
-        src_string = _p('observation_sources', 'scan')
-        self._combination_method = _p('combination_method', 1)
-        self._footprint_clearing_enabled = _p('footprint_clearing_enabled', True)
-        self._max_obstacle_height = _p('max_obstacle_height', 2.0)
+        self._enabled = self._declare_parameter_if_not_declared('enabled', True)
+        src_string = self._declare_parameter_if_not_declared('observation_sources', 'scan')
+        self._combination_method = self._declare_parameter_if_not_declared('combination_method', 1)
+        self._footprint_clearing_enabled = self._declare_parameter_if_not_declared(
+            'footprint_clearing_enabled', True)
+        self._max_obstacle_height = self._declare_parameter_if_not_declared(
+            'max_obstacle_height', 2.0)
 
         sources = [s.strip() for s in src_string.split() if s.strip()]
         self._observation_sources = sources
 
         for src in sources:
             def _ps(param: str, default: Any, _src: str = src) -> Any:
-                full = f'{name}.{_src}.{param}'
+                full = f'{self._name}.{_src}.{param}'
                 if not node.has_parameter(full):
                     node.declare_parameter(full, default)
                 return node.get_parameter(full).value
@@ -132,7 +127,7 @@ class ObstacleLayer(CostmapLayer):
                 })
 
             node.get_logger().info(
-                f'[ObstacleLayer] "{name}" subscribed to "{topic}" '
+                f'[ObstacleLayer] "{self._name}" subscribed to "{topic}" '
                 f'(mark={marking}, clear={clearing})'
             )
 

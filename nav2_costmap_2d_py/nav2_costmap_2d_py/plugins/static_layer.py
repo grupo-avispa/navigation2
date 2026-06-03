@@ -74,28 +74,26 @@ class StaticLayer(CostmapLayer):
     def on_initialize(self) -> None:
         """Initialize the layer on startup: read parameters and subscribe to the map topic."""
         node = self._node
-        name = self._name
 
-        def _p(param: str, default: Any) -> Any:
-            full = f'{name}.{param}'
-            if not node.has_parameter(full):
-                node.declare_parameter(full, default)
-            return node.get_parameter(full).value
-
-        self._enabled = _p('enabled', True)
+        self._enabled = self._declare_parameter_if_not_declared('enabled', True)
         # Resolve the map topic against the parent namespace: the costmap node
         # is in the '/global_costmap' sub-namespace, so a relative 'map' would
         # become '/global_costmap/map' instead of the '/map' map_server uses.
-        self._map_topic = self.join_with_parent_namespace(_p('map_topic', 'map'))
-        self._subscribe_to_updates = _p('subscribe_to_updates', False)
-        self._track_unknown_space = _p('track_unknown_space', True)
-        self._use_maximum = _p('use_maximum', False)
-        self._lethal_threshold = _p('lethal_cost_threshold', 100)
-        unknown_raw = _p('unknown_cost_value', -1)
+        self._map_topic = self.join_with_parent_namespace(
+            self._declare_parameter_if_not_declared('map_topic', 'map'))
+        self._subscribe_to_updates = self._declare_parameter_if_not_declared(
+            'subscribe_to_updates', False)
+        self._track_unknown_space = self._declare_parameter_if_not_declared(
+            'track_unknown_space', True)
+        self._use_maximum = self._declare_parameter_if_not_declared('use_maximum', False)
+        self._lethal_threshold = self._declare_parameter_if_not_declared(
+            'lethal_cost_threshold', 100)
+        unknown_raw = self._declare_parameter_if_not_declared('unknown_cost_value', -1)
         self._unknown_cost_value = 255 if unknown_raw == -1 else int(unknown_raw)
-        self._trinary_costmap = _p('trinary_costmap', True)
-        self._transform_tolerance = _p('transform_tolerance', 0.0)
-        self._map_subscribe_transient_local = _p(
+        self._trinary_costmap = self._declare_parameter_if_not_declared('trinary_costmap', True)
+        self._transform_tolerance = self._declare_parameter_if_not_declared(
+            'transform_tolerance', 0.0)
+        self._map_subscribe_transient_local = self._declare_parameter_if_not_declared(
             'map_subscribe_transient_local', True)
 
         # The map_server latches the map (publishes once, TRANSIENT_LOCAL).
@@ -132,7 +130,7 @@ class StaticLayer(CostmapLayer):
                 )
 
         node.get_logger().info(
-            f'[StaticLayer] "{name}" subscribing to "{self._map_topic}"'
+            f'[StaticLayer] "{self._name}" subscribing to "{self._map_topic}"'
         )
 
     def update_bounds(

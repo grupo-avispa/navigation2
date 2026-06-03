@@ -267,6 +267,28 @@ class Layer(ABC):
         """
         return self._name
 
+    def _declare_parameter_if_not_declared(self, param: str, default: Any) -> Any:
+        """
+        Declare a parameter if it has not been declared yet.
+
+        Parameters
+        ----------
+        param : str
+            Name of the parameter to declare.
+        default: Any
+            Default value for the parameter.
+
+        Returns
+        -------
+        Any
+            The value of the parameter after declaration.
+
+        """
+        full = f'{self._name}.{param}'
+        if not self._node.has_parameter(full):
+            self._node.declare_parameter(full, default)
+        return self._node.get_parameter(full).value
+
     def join_with_parent_namespace(self, topic: str) -> str:
         """
         Resolve a relative topic against the costmap's *parent* namespace.

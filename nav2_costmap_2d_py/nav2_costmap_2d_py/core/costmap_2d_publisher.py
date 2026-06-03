@@ -140,11 +140,6 @@ class Costmap2DPublisher:
         """
         Translate a raw costmap buffer to OccupancyGrid values.
 
-        The per-cell Python list comprehension ran over the whole costmap on every
-        publish and held the GIL for hundreds of ms on large maps, freezing the
-        process and making the planner miss the BT's goal-acknowledge timeout. The
-        NumPy LUT index runs in C and releases the GIL.
-
         Parameters
         ----------
         raw : bytearray

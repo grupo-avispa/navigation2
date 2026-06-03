@@ -72,8 +72,9 @@ class PluginProvider:
     """
     Provider for discovering and loading python plugins.
 
-    This class is responsible for finding plugin.xml files in ROS2 packages,
-    parsing them, and loading the corresponding Python classes.
+    This class is responsible for finding plugin manifest files declared via
+    package.xml export tags, parsing them, and loading the corresponding
+    Python classes.
     """
 
     def __init__(self, export_tag: str, base_class_type: str):
@@ -255,7 +256,17 @@ class PluginProvider:
 
     def _find_plugins(self, node) -> List[tuple]:
         """
-        Find all plugin.xml files in ROS2 packages.
+        Find all plugin manifest files declared via the export tag in ROS2 packages.
+
+        Mirrors pluginlib: each package names its plugin manifest in its
+        ``package.xml`` export section, e.g.::
+
+            <export>
+              <nav2_costmap_2d_py plugin="${prefix}/costmap_plugins.xml"/>
+            </export>
+
+        The export tag searched for is :attr:`_export_tag`, so the manifest may
+        be named freely (``plugin.xml``, ``costmap_plugins.xml``, ...).
 
         Parameters
         ----------
@@ -278,9 +289,10 @@ class PluginProvider:
                 # Get package share directory
                 package_share_dir = get_package_share_directory(package_name)
 
-                # Check for plugin.xml file
-                plugin_xml_path = os.path.join(package_share_dir, 'plugin.xml')
-                if os.path.isfile(plugin_xml_path):
+                # Resolve the manifest path from the package.xml export tag
+                plugin_xml_path = self._plugin_xml_from_exports(
+                    package_share_dir)
+                if plugin_xml_path and os.path.isfile(plugin_xml_path):
                     plugin_files.append((package_name, plugin_xml_path))
 
             except Exception:
@@ -288,6 +300,41 @@ class PluginProvider:
                 continue
 
         return plugin_files
+
+    def _plugin_xml_from_exports(self, package_share_dir: str):
+        """
+        Resolve the plugin manifest path from a package's export tag.
+
+        Parameters
+        ----------
+        package_share_dir : str
+            The package's share directory (where ``package.xml`` is installed).
+
+        Returns
+        -------
+        str or None
+            The resolved manifest path declared under :attr:`_export_tag`, or
+            ``None`` if the package does not declare one.
+
+        """
+        package_xml = os.path.join(package_share_dir, 'package.xml')
+        if not os.path.isfile(package_xml):
+            return None
+
+        try:
+            root = ElementTree.parse(package_xml).getroot()
+        except Exception:
+            return None
+
+        for export_el in root.iter('export'):
+            for tag_el in export_el.iter(self._export_tag):
+                rel = tag_el.attrib.get('plugin', '')
+                if rel:
+                    # ${prefix} resolves to the package share directory.
+                    rel = rel.replace('${prefix}', package_share_dir)
+                    return os.path.normpath(rel)
+
+        return None
 
     def _parse_plugin_xml(
         self,

@@ -68,6 +68,7 @@ class GlobalPlanner:
             tf2_ros.Buffer for coordinate transforms, or None if unavailable.
         costmap_ros :
             nav2_costmap_2d.Costmap2DROS instance (or None / mock).
+
         """
         raise NotImplementedError
 
@@ -106,8 +107,7 @@ class GlobalPlanner:
         cancel_checker,
     ) -> Path:
         """
-        Compute a path from start to goal, optionally through
-        intermediate viapoints.
+        Compute a path from start to goal, optionally through intermediate viapoints.
 
         Called on every planning request. Must return as quickly as possible
         and must honour the cancel_checker to support action cancellation.
@@ -135,5 +135,6 @@ class GlobalPlanner:
         ------
         PlannerException
             Any subclass of PlannerException to signal specific failure modes.
+
         """
         raise NotImplementedError

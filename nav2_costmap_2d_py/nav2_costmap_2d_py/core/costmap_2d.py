@@ -164,7 +164,7 @@ class Costmap2D:
             return False, 0, 0
         return True, mx, my
 
-    def world_to_map_enforced_bounds(self, wx: float, wy: float) -> Tuple[int, int]:
+    def world_to_map_enforce_bounds(self, wx: float, wy: float) -> Tuple[int, int]:
         """
         Convert from world coordinates to map coordinates, constraining results to legal bounds.
 
@@ -362,7 +362,7 @@ class Costmap2D:
             for x in range(x0, xn):
                 self._costmap[self.get_index(x, y)] = self._default_value
 
-    def move_map(self, new_origin_x: float, new_origin_y: float) -> None:
+    def update_origin(self, new_origin_x: float, new_origin_y: float) -> None:
         """
         Move the origin of the costmap to a new location, keeping data where it can.
 
@@ -384,11 +384,11 @@ class Costmap2D:
         self.reset_maps()
 
         for ny in range(self._size_y):
-            oy = ny - cell_oy
+            oy = ny + cell_oy
             if oy < 0 or oy >= self._size_y:
                 continue
             for nx in range(self._size_x):
-                ox = nx - cell_ox
+                ox = nx + cell_ox
                 if ox < 0 or ox >= self._size_x:
                     continue
                 self._costmap[self.get_index(nx, ny)] = old_map[self.get_index(ox, oy)]

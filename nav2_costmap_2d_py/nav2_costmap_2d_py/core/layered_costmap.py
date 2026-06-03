@@ -15,22 +15,27 @@
 
 """
 LayeredCostmap for nav2_costmap_2d_py.
+
 Aggregates a list of :class:`Layer` plugins into a single combined ``Costmap2D``.
 It mirrors the nav2_costmap_2d::LayeredCostmap from the C++ implementation.
 """
+from __future__ import annotations
 
+import ast
 import math
-import threading
-from typing import List, Optional
+from typing import List, Tuple, TYPE_CHECKING
 
-from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
 from nav2_costmap_2d_py.core.cost_values import FREE_SPACE, NO_INFORMATION
+from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
+
+if TYPE_CHECKING:
+    # Imported only for type hints; importing at runtime would create a
+    # circular import (layer imports LayeredCostmap under TYPE_CHECKING too).
+    from nav2_costmap_2d_py.core.layer import Layer
 
 
 class LayeredCostmap:
-    """
-    Instantiates layer plugins and aggregates them into one combined grid.
-    """
+    """Instantiates layer plugins and aggregates them into one combined grid."""
 
     def __init__(
         self,
@@ -38,6 +43,20 @@ class LayeredCostmap:
         rolling_window: bool,
         track_unknown_space: bool,
     ) -> None:
+        """
+        Construct a layered costmap.
+
+        Parameters
+        ----------
+        global_frame : str
+            The global frame the costmap is expressed in.
+        rolling_window : bool
+            Whether the costmap is a rolling window that follows the robot.
+        track_unknown_space : bool
+            Whether unknown space is tracked (default value ``NO_INFORMATION``)
+            or treated as free space (``FREE_SPACE``).
+
+        """
         self._global_frame = global_frame
         self._rolling_window = rolling_window
         self._track_unknown_space = track_unknown_space
@@ -45,8 +64,8 @@ class LayeredCostmap:
         default_value = NO_INFORMATION if track_unknown_space else FREE_SPACE
         self._combined_costmap = Costmap2D(default_value=default_value)
 
-        self._plugins: List = []   # List[Layer]
-        self._filters: List = []   # List[Layer] (costmap filters)
+        self._plugins: List[Layer] = []
+        self._filters: List[Layer] = []   # costmap filters
 
         self._initialized = False
         self._current = False
@@ -62,7 +81,7 @@ class LayeredCostmap:
         self.circumscribed_radius: float = 0.0
         self.inscribed_radius: float = 0.0
 
-        self._footprint: list = []
+        self._footprint: List[Tuple[float, float]] = []
 
     # ------------------------------------------------------------------
     # Resize
@@ -77,7 +96,25 @@ class LayeredCostmap:
         origin_y: float,
         size_locked: bool = False,
     ) -> None:
-        """Resize the combined costmap and propagate to all layers."""
+        """
+        Resize the map to a new size, resolution, or origin and propagate to all layers.
+
+        Parameters
+        ----------
+        size_x : int
+            The new x size of the map in cells.
+        size_y : int
+            The new y size of the map in cells.
+        resolution : float
+            The new resolution of the map in meters/cell.
+        origin_x : float
+            The new x origin of the map.
+        origin_y : float
+            The new y origin of the map.
+        size_locked : bool
+            Whether the size of the costmap is locked against further resizing.
+
+        """
         with self._combined_costmap.get_mutex():
             self._size_locked = size_locked
             self._combined_costmap.resize_map(
@@ -92,18 +129,36 @@ class LayeredCostmap:
     # Plugin / filter management
     # ------------------------------------------------------------------
 
-    def add_plugin(self, plugin) -> None:
-        """Add a layer plugin."""
+    def add_plugin(self, plugin: 'Layer') -> None:
+        """
+        Add a new plugin to the plugins list to process.
+
+        Parameters
+        ----------
+        plugin : Layer
+            The layer plugin to add.
+
+        """
         self._plugins.append(plugin)
 
-    def add_filter(self, f) -> None:
-        """Add a filter layer."""
+    def add_filter(self, f: 'Layer') -> None:
+        """
+        Add a new costmap filter plugin to the filters list to process.
+
+        Parameters
+        ----------
+        f : Layer
+            The costmap filter layer to add.
+
+        """
         self._filters.append(f)
 
-    def get_plugins(self) -> list:
+    def get_plugins(self) -> List['Layer']:
+        """Get the list of costmap plugins."""
         return self._plugins
 
-    def get_filters(self) -> list:
+    def get_filters(self) -> List['Layer']:
+        """Get the list of costmap filters."""
         return self._filters
 
     # ------------------------------------------------------------------
@@ -117,13 +172,23 @@ class LayeredCostmap:
         robot_yaw: float,
     ) -> None:
         """
-        Run one costmap update cycle.
+        Update the underlying costmap with new data (run one costmap update cycle).
 
+        Can be called outside the periodic update loop to force a refresh.
+
+        Parameters
+        ----------
+        robot_x, robot_y, robot_yaw : float
+            Current robot pose in the global frame.
+
+        Notes
+        -----
         1. If rolling window, shift origin to keep robot centred.
         2. Reset combined costmap to default value.
         3. Call ``update_bounds`` on every plugin.
         4. Call ``update_costs`` on every plugin within bounds.
         5. Apply filters on top.
+
         """
         with self._combined_costmap.get_mutex():
             # ----- Rolling window origin shift -----
@@ -151,8 +216,10 @@ class LayeredCostmap:
 
             # ----- update_bounds on each plugin -----
             for plugin in self._plugins:
-                plugin.update_bounds(robot_x, robot_y, robot_yaw,
-                                     min_x, min_y, max_x, max_y)
+                plugin.update_bounds(
+                    robot_x, robot_y, robot_yaw,
+                    min_x, min_y, max_x, max_y
+                )
 
             # ----- Clamp bounds to map extents and convert to cell indices -----
             if min_x[0] > max_x[0] or min_y[0] > max_y[0]:
@@ -192,7 +259,10 @@ class LayeredCostmap:
 
     def is_current(self) -> bool:
         """
-        Return True if ALL enabled layers report current data.
+        Return whether the costmap is current.
+
+        The costmap is current when all enabled layers are processing recent
+        data and not stale information.
         """
         self._current = True
         for plugin in self._plugins:
@@ -210,6 +280,22 @@ class LayeredCostmap:
     # ------------------------------------------------------------------
 
     def is_out_of_bounds(self, robot_x: float, robot_y: float) -> bool:
+        """
+        Check whether the robot is outside the bounds of its costmap.
+
+        Useful for detecting poorly configured setups.
+
+        Parameters
+        ----------
+        robot_x, robot_y : float
+            The robot position in the global frame.
+
+        Returns
+        -------
+        bool
+            True if the robot lies outside the costmap bounds.
+
+        """
         ok, _, _ = self._combined_costmap.world_to_map(robot_x, robot_y)
         return not ok
 
@@ -217,11 +303,18 @@ class LayeredCostmap:
     # Footprint
     # ------------------------------------------------------------------
 
-    def set_footprint(self, footprint: list) -> None:
+    def set_footprint(self, footprint: List[Tuple[float, float]]) -> None:
         """
-        Set the robot footprint and propagate to all layers.
+        Update the stored footprint, the circumscribed/inscribed radii, and all layers.
 
-        Computes circumscribed and inscribed radii.
+        Calls ``on_footprint_changed()`` (via ``set_footprint``) on every plugin
+        and filter.
+
+        Parameters
+        ----------
+        footprint : list of tuple of float
+            The robot footprint as a list of ``(x, y)`` points.
+
         """
         self._footprint = footprint
         self.circumscribed_radius, self.inscribed_radius = (
@@ -232,7 +325,8 @@ class LayeredCostmap:
         for f in self._filters:
             f.set_footprint(footprint)
 
-    def get_footprint(self) -> list:
+    def get_footprint(self) -> List[Tuple[float, float]]:
+        """Return the latest footprint stored with ``set_footprint()``."""
         return self._footprint
 
     # ------------------------------------------------------------------
@@ -240,21 +334,35 @@ class LayeredCostmap:
     # ------------------------------------------------------------------
 
     def get_costmap(self) -> Costmap2D:
+        """Get the master (combined) costmap."""
         return self._combined_costmap
 
     def get_global_frame_id(self) -> str:
+        """Get the global frame the costmap is expressed in."""
         return self._global_frame
 
     def is_rolling_window(self) -> bool:
+        """Return whether this costmap is a rolling window."""
         return self._rolling_window
 
     def is_size_locked(self) -> bool:
+        """Return whether the size of the costmap is locked."""
         return self._size_locked
 
     def is_initialized(self) -> bool:
+        """Return whether the costmap is initialized."""
         return self._initialized
 
-    def get_updated_bounds(self):
+    def get_updated_bounds(self) -> Tuple[int, int, int, int]:
+        """
+        Get the bounds of the costmap region updated in the last cycle.
+
+        Returns
+        -------
+        tuple of int
+            ``(x0, y0, xn, yn)`` cell-index bounds of the last update.
+
+        """
         return self._bx0, self._by0, self._bxn, self._byn
 
 
@@ -262,9 +370,23 @@ class LayeredCostmap:
 # Footprint helpers
 # ---------------------------------------------------------------------------
 
-def _compute_footprint_radii(footprint: list):
-    """Return (circumscribed_radius, inscribed_radius) for a footprint polygon."""
-    import math
+def _compute_footprint_radii(
+    footprint: List[Tuple[float, float]]
+) -> Tuple[float, float]:
+    """
+    Compute the circumscribed and inscribed radii of a footprint polygon.
+
+    Parameters
+    ----------
+    footprint : list of tuple of float
+        The robot footprint as a list of ``(x, y)`` points.
+
+    Returns
+    -------
+    tuple of float
+        The ``(circumscribed_radius, inscribed_radius)`` of the footprint.
+
+    """
     if not footprint:
         return 0.0, 0.0
 
@@ -295,11 +417,21 @@ def _compute_footprint_radii(footprint: list):
     return circumscribed, inscribed
 
 
-def make_footprint_from_radius(radius: float) -> list:
+def make_footprint_from_radius(radius: float) -> List[Tuple[float, float]]:
     """
-    Build a circular footprint (16-point polygon) of given radius.
+    Build a circular footprint (16-point polygon) of the given radius.
+
+    Parameters
+    ----------
+    radius : float
+        The radius of the circular footprint, in metres.
+
+    Returns
+    -------
+    list of tuple of float
+        The footprint as a list of ``(x, y)`` points.
+
     """
-    import math
     n = 16
     return [
         (radius * math.cos(2 * math.pi * i / n),
@@ -308,13 +440,22 @@ def make_footprint_from_radius(radius: float) -> list:
     ]
 
 
-def make_footprint_from_string(footprint_str: str) -> list:
+def make_footprint_from_string(footprint_str: str) -> List[Tuple[float, float]]:
     """
     Parse a footprint string like ``"[[0.1,0.2],[-0.1,0.2],[-0.1,-0.2],[0.1,-0.2]]"``.
 
-    Returns a list of (x, y) tuples, or an empty list on parse error.
+    Parameters
+    ----------
+    footprint_str : str
+        The footprint expressed as a string of ``[[x, y], ...]`` points.
+
+    Returns
+    -------
+    list of tuple of float
+        The parsed footprint as ``(x, y)`` tuples, or an empty list on parse
+        error.
+
     """
-    import ast
     try:
         data = ast.literal_eval(footprint_str.strip())
         if not isinstance(data, (list, tuple)):
@@ -328,11 +469,25 @@ def make_footprint_from_string(footprint_str: str) -> list:
         return []
 
 
-def pad_footprint(footprint: list, padding: float) -> list:
+def pad_footprint(
+    footprint: List[Tuple[float, float]], padding: float
+) -> List[Tuple[float, float]]:
     """
-    Expand footprint outward by *padding* metres.
+    Expand a footprint outward by *padding* metres.
+
+    Parameters
+    ----------
+    footprint : list of tuple of float
+        The footprint to pad, as a list of ``(x, y)`` points.
+    padding : float
+        The amount to expand each point outward, in metres.
+
+    Returns
+    -------
+    list of tuple of float
+        The padded footprint.
+
     """
-    import math
     if not footprint or padding <= 0:
         return list(footprint)
     cx = sum(p[0] for p in footprint) / len(footprint)
@@ -351,14 +506,27 @@ def pad_footprint(footprint: list, padding: float) -> list:
 
 
 def transform_footprint(
-    x: float, y: float, theta: float, footprint: list
-) -> list:
+    x: float, y: float, theta: float,
+    footprint: List[Tuple[float, float]],
+) -> List[Tuple[float, float]]:
     """
     Rotate and translate a footprint to the robot pose (x, y, theta).
 
-    Returns list of (wx, wy) world-frame points.
+    Parameters
+    ----------
+    x, y : float
+        World position of the robot.
+    theta : float
+        Orientation of the robot, in radians.
+    footprint : list of tuple of float
+        The footprint in the robot frame, as ``(x, y)`` points.
+
+    Returns
+    -------
+    list of tuple of float
+        The footprint transformed into the world frame as ``(wx, wy)`` points.
+
     """
-    import math
     cos_th = math.cos(theta)
     sin_th = math.sin(theta)
     return [

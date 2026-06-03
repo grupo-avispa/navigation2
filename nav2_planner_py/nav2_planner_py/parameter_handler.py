@@ -20,8 +20,8 @@ It mirrors the nav2_planner::ParameterHandler from the C++ implementation.
 Manages parameter declarations, validation, and dynamic parameter updates.
 """
 
-import threading
 from dataclasses import dataclass, field
+import threading
 from typing import List
 
 from rcl_interfaces.msg import SetParametersResult
@@ -60,6 +60,7 @@ class ParameterHandler:
         ----------
         node : LifecycleNode
             The ROS2 lifecycle node for parameter management.
+
         """
         self._node = node
         self._logger = node.get_logger()
@@ -143,6 +144,7 @@ class ParameterHandler:
             Parameter name.
         default_value
             Default value for the parameter.
+
         """
         if not self._node.has_parameter(name):
             self._node.declare_parameter(name, default_value)
@@ -165,6 +167,7 @@ class ParameterHandler:
         ------
         RuntimeError
             If the parameter is not defined or cannot be retrieved.
+
         """
         param_name = f'{plugin_name}.plugin'
         plugin_type = self.declare_or_get_parameter(param_name, '')
@@ -192,7 +195,7 @@ class ParameterHandler:
 
     def _on_set_parameters_callback(self, parameters) -> SetParametersResult:
         """
-        Callback triggered when parameters are being updated.
+        Triggered when parameters are being updated.
 
         This validates and applies parameter changes with mutex protection.
 
@@ -205,6 +208,7 @@ class ParameterHandler:
         -------
         SetParametersResult
             Result indicating whether the update was accepted.
+
         """
         # Validate parameters
         if not self._validate_parameters(parameters):
@@ -220,8 +224,6 @@ class ParameterHandler:
         """
         Validate incoming parameter updates.
 
-        Mirrors validateParameterUpdatesCallback in C++.
-
         Parameters
         ----------
         parameters : list
@@ -231,6 +233,7 @@ class ParameterHandler:
         -------
         bool
             True if all parameters are valid, False otherwise.
+
         """
         for param in parameters:
             param_name = param.name
@@ -262,6 +265,7 @@ class ParameterHandler:
         ----------
         parameters : list
             List of validated parameters to apply.
+
         """
         with self._mutex:
             for param in parameters:
@@ -291,12 +295,12 @@ class ParameterHandler:
 
     def get_parameters(self) -> Parameters:
         """
-        Get current parameters with mutex protection.
+        Get the current parameter values.
 
         Returns
         -------
-        Parameters
-            Current parameter values.
+            Parameters: The current parameter values.
+
         """
         with self._mutex:
             return self._params
@@ -322,6 +326,7 @@ class ParameterHandler:
         Returns
         -------
         The current or default value of the parameter.
+
         """
         if self._node.has_parameter(name):
             return self._node.get_parameter(name).value
@@ -344,5 +349,6 @@ class ParameterHandler:
         -------
         threading.Lock
             Mutex for synchronizing parameter access.
+
         """
         return self._mutex

@@ -14,8 +14,8 @@
 # limitations under the License.
 
 """
-SpeedFilter
-===========
+SpeedFilter for nav2_costmap_2d_py.
+
 Costmap filter that reads a speed-limit mask and publishes
 ``nav2_msgs/msg/SpeedLimit`` messages when the robot enters / leaves
 a speed-limited zone.
@@ -26,17 +26,12 @@ Plugin type string:
     ``"nav2_costmap_2d_py/SpeedFilter"``
 """
 
-import math
-from typing import Any, Optional
+from typing import Any, List, Optional
 
-from nav_msgs.msg import OccupancyGrid
-from nav2_msgs.msg import SpeedLimit
-
-from nav2_costmap_2d_py.core.layer import Layer
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
-from nav2_costmap_2d_py.core.cost_values import FREE_SPACE, NO_INFORMATION
-
-_EPSILON = 1e-6
+from nav2_costmap_2d_py.core.layer import Layer
+from nav2_msgs.msg import SpeedLimit
+from nav_msgs.msg import OccupancyGrid
 
 # OccupancyGrid value that means "full speed"
 _FULL_SPEED_ZONE = 0
@@ -44,17 +39,15 @@ _FULL_SPEED_ZONE = 0
 
 class SpeedFilter(Layer):
     """
-    Reads a speed mask and publishes SpeedLimit when the robot enters a zone.
+    Read in a speed restriction mask to dynamically adjust the robot's speed.
 
-    Parameters (under ``<name>.``):
-      enabled               (bool,  default True)
-      speed_limit_topic     (str,   default 'speed_limit')
-      mask_topic            (str,   default 'speed_filter_mask')
-      percentage            (bool,  default True)
-      base_speed            (float, default 0.5 m/s – used when percentage=False)
+    Enables the robot to slow down in dangerous areas based on its pose in the
+    map, publishing ``nav2_msgs/msg/SpeedLimit`` messages when the robot enters
+    or leaves a speed-limited zone.
     """
 
     def __init__(self) -> None:
+        """Initialize speed filter defaults."""
         super().__init__()
         self._speed_limit_topic = 'speed_limit'
         self._mask_topic = 'speed_filter_mask'
@@ -68,15 +61,18 @@ class SpeedFilter(Layer):
         self._mask_origin_x: float = 0.0
         self._mask_origin_y: float = 0.0
 
-        self._mask_sub: Optional[Any] = None
-        self._speed_limit_pub: Optional[Any] = None
+        self._mask_sub: Any = None
+        # Any (not Optional): assigned a real publisher in on_initialize before
+        # use; avoids a spurious mypy union-attr on .publish().
+        self._speed_limit_pub: Any = None
         self._last_speed_limit: Optional[float] = None
 
     def on_initialize(self) -> None:
+        """Initialize the filter: read params, subscribe to the mask and create the publisher."""
         node = self._node
         name = self._name
 
-        def _p(param, default):
+        def _p(param: str, default: Any) -> Any:
             full = f'{name}.{param}'
             if not node.has_parameter(full):
                 node.declare_parameter(full, default)
@@ -108,21 +104,49 @@ class SpeedFilter(Layer):
 
     def update_bounds(
         self,
-        robot_x, robot_y, robot_yaw,
-        min_x, min_y, max_x, max_y,
+        robot_x: float,
+        robot_y: float,
+        robot_yaw: float,
+        min_x: List[float],
+        min_y: List[float],
+        max_x: List[float],
+        max_y: List[float],
     ) -> None:
+        """
+        Update the master costmap bounds (no-op: the speed filter does not change bounds).
+
+        Parameters
+        ----------
+        robot_x, robot_y, robot_yaw : float
+            Current robot pose in the global frame.
+        min_x, min_y, max_x, max_y : list of float
+            Single-element lists holding the update window bounds (left
+            unchanged by this filter).
+
+        """
         # SpeedFilter does not modify the costmap bounds
         pass
 
     def update_costs(
         self,
         master_grid: Costmap2D,
-        min_i: int, min_j: int,
-        max_i: int, max_j: int,
+        min_i: int,
+        min_j: int,
+        max_i: int,
+        max_j: int,
     ) -> None:
         """
-        Lookup the speed-mask value at the robot's current cell and
-        publish a SpeedLimit if it has changed.
+        Process the speed filter at the robot's pose, publishing a speed limit on change.
+
+        Parameters
+        ----------
+        master_grid : Costmap2D
+            The master costmap (not modified by this filter).
+        min_i, min_j : int
+            Lower x/y boundary of the window, in cells.
+        max_i, max_j : int
+            Upper x/y boundary of the window, in cells.
+
         """
         if not self._enabled or self._mask is None:
             return
@@ -156,17 +180,37 @@ class SpeedFilter(Layer):
         self._current = True
 
     def reset(self) -> None:
+        """Reset the costmap filter, clearing the last published speed limit."""
         self._last_speed_limit = None
         self._current = False
 
     def is_current(self) -> bool:
+        """
+        Check whether the data is up to date.
+
+        Returns
+        -------
+        bool
+            Always ``True``; the speed filter is always considered current.
+
+        """
         return True  # SpeedFilter is always considered current
 
     def _get_speed_at(self, wx: float, wy: float) -> Optional[float]:
         """
-        Return the speed limit fraction/absolute at world (wx, wy).
+        Return the speed limit (fraction or absolute) at world position (wx, wy).
 
-        Returns None if (wx, wy) is outside the mask.
+        Parameters
+        ----------
+        wx, wy : float
+            World coordinates to query in the speed mask.
+
+        Returns
+        -------
+        float or None
+            The speed limit value, ``0.0`` when in a full-speed zone, or
+            ``None`` if ``(wx, wy)`` is outside the mask.
+
         """
         if self._mask is None:
             return None
@@ -190,6 +234,16 @@ class SpeedFilter(Layer):
             return self._base_speed * (1.0 - val / 100.0)
 
     def _publish_speed_limit(self, speed_limit: float) -> None:
+        """
+        Publish a ``nav2_msgs/msg/SpeedLimit`` message with the given limit.
+
+        Parameters
+        ----------
+        speed_limit : float
+            The speed limit to publish (percentage of max speed or absolute
+            speed, depending on the ``percentage`` parameter).
+
+        """
         msg = SpeedLimit()
         msg.header.stamp = self._node.get_clock().now().to_msg()
         msg.header.frame_id = self._layered_costmap.get_global_frame_id()
@@ -199,7 +253,13 @@ class SpeedFilter(Layer):
 
     def _mask_callback(self, msg: OccupancyGrid) -> None:
         """
-        Receive the speed mask.
+        Handle the filter mask: store the incoming speed-restriction OccupancyGrid.
+
+        Parameters
+        ----------
+        msg : OccupancyGrid
+            The incoming speed-restriction mask.
+
         """
         self._mask_width = msg.info.width
         self._mask_height = msg.info.height

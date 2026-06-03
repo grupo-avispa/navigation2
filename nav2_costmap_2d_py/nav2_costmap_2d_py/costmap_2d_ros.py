@@ -28,61 +28,33 @@ import math
 import threading
 import time
 import traceback
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional, Tuple
 
+from geometry_msgs.msg import Point32, Polygon, PolygonStamped, PoseStamped
+from nav2_core_py.plugin_provider import PluginProvider
+from nav2_costmap_2d_py.core.clear_costmap_service import ClearCostmapService
+from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
+from nav2_costmap_2d_py.core.costmap_2d_publisher import Costmap2DPublisher
+from nav2_costmap_2d_py.core.costmap_layer import CostmapLayer
+from nav2_costmap_2d_py.core.layered_costmap import (LayeredCostmap, make_footprint_from_radius,
+                                                     make_footprint_from_string, pad_footprint,
+                                                     transform_footprint)
+from nav2_msgs.srv import GetCosts
+from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
 import rclpy
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
-from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
-
-from geometry_msgs.msg import PolygonStamped, Polygon, Point32, PoseStamped
-
-from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
-from nav2_costmap_2d_py.core.layered_costmap import (
-    LayeredCostmap,
-    make_footprint_from_radius,
-    make_footprint_from_string,
-    pad_footprint,
-    transform_footprint,
-)
-from nav2_costmap_2d_py.core.costmap_2d_publisher import Costmap2DPublisher
-from nav2_costmap_2d_py.core.clear_costmap_service import ClearCostmapService
-from nav2_core_py.plugin_provider import PluginProvider
-
-import tf2_ros
-from tf2_ros import Buffer, TransformListener
-import tf2_geometry_msgs  # noqa: F401
+import rclpy.parameter as _rp
+from tf2_ros import Buffer, TransformListener  # type: ignore[import-untyped]
 
 
 class Costmap2DROS(LifecycleNode):
     """
-    Python lifecycle node wrapping a LayeredCostmap.
+    A ROS wrapper for a 2D costmap, implemented as a lifecycle node.
 
-    Drop-in replacement for the C++ ``Costmap2DROS`` node.
-
-    YAML parameters (under ``<node_name>.ros__parameters``):
-      global_frame                (str,   default 'map')
-      robot_base_frame            (str,   default 'base_link')
-      resolution                  (float, default 0.05)
-      width                       (int,   default 5   [metres])
-      height                      (int,   default 5   [metres])
-      origin_x                    (float, default 0.0)
-      origin_y                    (float, default 0.0)
-      rolling_window              (bool,  default False)
-      track_unknown_space         (bool,  default False)
-      update_frequency            (float, default 5.0)
-      publish_frequency           (float, default 1.0)
-      transform_tolerance         (float, default 0.3)
-      initial_transform_timeout   (float, default 60.0)
-      always_send_full_costmap    (bool,  default False)
-      map_vis_z                   (float, default 0.0)
-      robot_radius                (float, default 0.1)
-      footprint                   (str,   default '[]')
-      footprint_padding           (float, default 0.01)
-      plugins                     (list,  default ['static_layer',
-                                                    'obstacle_layer',
-                                                    'inflation_layer'])
-      filters                     (list,  default [])
-      subscribe_to_stamped_footprint (bool, default False)
+    Wraps a :class:`LayeredCostmap`, manages its layer/filter plugins and handles
+    subscribing to topics that provide observations about obstacles (e.g. in the
+    form of PointCloud or LaserScan messages). Acts as a drop-in replacement for
+    the C++ ``nav2_costmap_2d::Costmap2DROS`` node.
     """
 
     # Default plugins
@@ -99,6 +71,19 @@ class Costmap2DROS(LifecycleNode):
         parent_namespace: str = '',
         use_sim_time: bool = False,
     ) -> None:
+        """
+        Construct the costmap node.
+
+        Parameters
+        ----------
+        name : str
+            The node name (and base of the costmap namespace).
+        parent_namespace : str
+            The parent namespace the costmap is nested under.
+        use_sim_time : bool
+            Whether to use simulation time.
+
+        """
         # Must be set before super().__init__() because get_name() is overridden
         # and ROS2 may call it during node initialization.
         self._name = name
@@ -127,7 +112,6 @@ class Costmap2DROS(LifecycleNode):
         # Set use_sim_time before declaring other parameters so that time
         # sources are configured correctly during on_configure.
         if use_sim_time:
-            import rclpy.parameter as _rp
             self.set_parameters([
                 _rp.Parameter('use_sim_time', _rp.Parameter.Type.BOOL, True)
             ])
@@ -223,6 +207,20 @@ class Costmap2DROS(LifecycleNode):
     # ------------------------------------------------------------------
 
     def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
+        """
+        Configure the node: read parameters, build the costmap, load plugins and filters.
+
+        Parameters
+        ----------
+        state : LifecycleState
+            The current lifecycle state.
+
+        Returns
+        -------
+        TransitionCallbackReturn
+            ``SUCCESS`` if configuration succeeded, ``FAILURE`` otherwise.
+
+        """
         self.get_logger().info('Configuring')
 
         try:
@@ -308,9 +306,8 @@ class Costmap2DROS(LifecycleNode):
 
         # ----- Publishers / Subscribers -----
         if self._subscribe_to_stamped_footprint:
-            from geometry_msgs.msg import PolygonStamped as PS
             self._footprint_sub = self.create_subscription(
-                PS, 'footprint',
+                PolygonStamped, 'footprint',
                 lambda msg: self.set_robot_footprint_polygon(msg.polygon),
                 1,
             )
@@ -335,7 +332,6 @@ class Costmap2DROS(LifecycleNode):
         )
 
         # Per-layer publishers (for CostmapLayer instances)
-        from nav2_costmap_2d_py.core.costmap_layer import CostmapLayer
         for layer in self._layered_costmap.get_plugins():
             if isinstance(layer, CostmapLayer):
                 pub = Costmap2DPublisher(
@@ -368,7 +364,6 @@ class Costmap2DROS(LifecycleNode):
         # ----- Services -----
         self._clear_costmap_service = ClearCostmapService(self, self)
 
-        from nav2_msgs.srv import GetCosts
         self._get_cost_service = self.create_service(
             GetCosts,
             f'get_cost_{self.get_name()}',
@@ -379,10 +374,28 @@ class Costmap2DROS(LifecycleNode):
         return TransitionCallbackReturn.SUCCESS
 
     def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
+        """
+        Activate the node: wait for TF, activate publishers and start the update loop.
+
+        Parameters
+        ----------
+        state : LifecycleState
+            The current lifecycle state.
+
+        Returns
+        -------
+        TransitionCallbackReturn
+            ``SUCCESS`` if activation succeeded, ``FAILURE`` otherwise.
+
+        """
         self.get_logger().info('Activating')
 
         # Wait for TF
         self.get_logger().info('Checking transform')
+        # _tf_buffer / _costmap_publisher are created in on_configure, which
+        # always runs before on_activate; assert for the type checker.
+        assert self._tf_buffer is not None
+        assert self._costmap_publisher is not None
         deadline = self.get_clock().now().nanoseconds / 1e9 + self._initial_transform_timeout
         rate_sleep = 0.5  # 2 Hz like C++ rclcpp::Rate r(2)
         while rclpy.ok():
@@ -426,13 +439,27 @@ class Costmap2DROS(LifecycleNode):
         self._start()   # calls plugin.activate() and sets stopped_ = False
 
         # Dynamic parameter callback
-        self._dyn_params_handler = self.add_on_set_parameters_callback(  # type: ignore[func-returns-value]
+        self._dyn_params_handler = self.add_on_set_parameters_callback(  # type: ignore
             self._dynamic_parameters_callback
         )
 
         return TransitionCallbackReturn.SUCCESS
 
     def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
+        """
+        Deactivate the node: stop plugins, the update loop and the publishers.
+
+        Parameters
+        ----------
+        state : LifecycleState
+            The current lifecycle state.
+
+        Returns
+        -------
+        TransitionCallbackReturn
+            ``SUCCESS`` once deactivation has completed.
+
+        """
         self.get_logger().info('Deactivating')
 
         if self._dyn_params_handler:
@@ -455,6 +482,20 @@ class Costmap2DROS(LifecycleNode):
         return TransitionCallbackReturn.SUCCESS
 
     def on_cleanup(self, state: LifecycleState) -> TransitionCallbackReturn:
+        """
+        Cleanup the node: release the costmap, publishers, services and TF resources.
+
+        Parameters
+        ----------
+        state : LifecycleState
+            The current lifecycle state.
+
+        Returns
+        -------
+        TransitionCallbackReturn
+            ``SUCCESS`` once cleanup has completed.
+
+        """
         self.get_logger().info('Cleaning up')
 
         self._costmap_publisher = None
@@ -470,6 +511,20 @@ class Costmap2DROS(LifecycleNode):
         return TransitionCallbackReturn.SUCCESS
 
     def on_shutdown(self, state: LifecycleState) -> TransitionCallbackReturn:
+        """
+        Shutdown the node.
+
+        Parameters
+        ----------
+        state : LifecycleState
+            The current lifecycle state.
+
+        Returns
+        -------
+        TransitionCallbackReturn
+            ``SUCCESS`` once shutdown has completed.
+
+        """
         self.get_logger().info('Shutting down')
         return TransitionCallbackReturn.SUCCESS
 
@@ -481,7 +536,7 @@ class Costmap2DROS(LifecycleNode):
         """Read all ROS2 parameters into member variables."""
         self.get_logger().debug('getParameters')
 
-        def _g(name):
+        def _g(name: str) -> Any:
             return self.get_parameter(name).value
 
         self._always_send_full = _g('always_send_full_costmap')
@@ -535,6 +590,25 @@ class Costmap2DROS(LifecycleNode):
             self.get_logger().error('Map height must be positive')
 
     def _get_plugin_type_param(self, plugin_name: str) -> str:
+        """
+        Resolve the ``<plugin_name>.plugin`` type string parameter.
+
+        Parameters
+        ----------
+        plugin_name : str
+            The name of the plugin (or filter) to resolve the type for.
+
+        Returns
+        -------
+        str
+            The fully-qualified plugin type string.
+
+        Raises
+        ------
+        RuntimeError
+            If the ``<plugin_name>.plugin`` parameter is not defined.
+
+        """
         param_name = f'{plugin_name}.plugin'
         if not self.has_parameter(param_name):
             self.declare_parameter(param_name, '')
@@ -542,7 +616,7 @@ class Costmap2DROS(LifecycleNode):
         if not val:
             raise RuntimeError(
                 f"Parameter '{param_name}' is not defined. "
-                f"Set it in your YAML config."
+                f'Set it in your YAML config.'
             )
         return val
 
@@ -552,7 +626,13 @@ class Costmap2DROS(LifecycleNode):
 
     def _map_update_loop(self, frequency: float) -> None:
         """
-        Background thread that calls ``update_map`` at *frequency* Hz.
+        Run the background thread that calls ``update_map`` at *frequency* Hz.
+
+        Parameters
+        ----------
+        frequency : float
+            The update frequency in Hz. A value of ``0.0`` disables the loop.
+
         """
         self.get_logger().debug(f'mapUpdateLoop frequency: {frequency}')
         if frequency == 0.0:
@@ -604,9 +684,7 @@ class Costmap2DROS(LifecycleNode):
                 )
 
     def _update_map(self) -> None:
-        """
-        Single costmap update step.
-        """
+        """Update the map with the layered costmap / plugins (single update step)."""
         if self._stop_updates or self._layered_costmap is None:
             return
 
@@ -626,9 +704,12 @@ class Costmap2DROS(LifecycleNode):
 
     def _start(self) -> None:
         """
-        Activate all layer plugins and start the update loop.
+        Start costmap updates, activating all layer plugins and filters.
+
+        Can be called to restart the costmap after a call to ``_stop()``.
         """
         if self._stopped:
+            assert self._layered_costmap is not None
             for plugin in self._layered_costmap.get_plugins():
                 plugin.activate()
             for f in self._layered_costmap.get_filters():
@@ -636,10 +717,9 @@ class Costmap2DROS(LifecycleNode):
             self._stopped = False
 
     def _stop(self) -> None:
-        """
-        Deactivate all layer plugins.
-        """
+        """Stop costmap updates, deactivating all layer plugins and filters."""
         self._stop_updates = True
+        assert self._layered_costmap is not None
         for plugin in self._layered_costmap.get_plugins():
             plugin.deactivate()
         for f in self._layered_costmap.get_filters():
@@ -651,9 +731,18 @@ class Costmap2DROS(LifecycleNode):
     # Footprint management
     # ------------------------------------------------------------------
 
-    def set_robot_footprint(self, points: list) -> None:
+    def set_robot_footprint(self, points: List[Tuple[float, float]]) -> None:
         """
-        Set padded and unpadded footprints and propagate to LayeredCostmap.
+        Set the robot footprint to the given points, padded by ``footprint_padding``.
+
+        Stores both the unpadded and padded footprints and propagates the padded
+        one to the LayeredCostmap.
+
+        Parameters
+        ----------
+        points : list of tuple of float
+            The robot footprint as a list of ``(x, y)`` points.
+
         """
         self._unpadded_footprint = list(points)
         self._padded_footprint = pad_footprint(points, self._footprint_padding)
@@ -662,14 +751,27 @@ class Costmap2DROS(LifecycleNode):
 
     def set_robot_footprint_polygon(self, polygon: Polygon) -> None:
         """
-        Set footprint from a geometry_msgs/Polygon message.
+        Set the robot footprint from a Polygon, padded by ``footprint_padding``.
+
+        Parameters
+        ----------
+        polygon : geometry_msgs.msg.Polygon
+            The footprint polygon; its points are used as ``(x, y)`` vertices.
+
         """
         pts = [(p.x, p.y) for p in polygon.points]
         self.set_robot_footprint(pts)
 
-    def get_oriented_footprint(self) -> list:
+    def get_oriented_footprint(self) -> List[Tuple[float, float]]:
         """
-        Return the footprint rotated/translated to the robot's current pose.
+        Build the oriented footprint of the robot at the robot's current pose.
+
+        Returns
+        -------
+        list of tuple of float
+            The footprint transformed to the current robot pose, or an empty
+            list if the pose is unavailable.
+
         """
         pose = self.get_robot_pose()
         if pose is None:
@@ -680,6 +782,7 @@ class Costmap2DROS(LifecycleNode):
         return transform_footprint(x, y, yaw, self._padded_footprint)
 
     def _publish_footprint(self) -> None:
+        """Publish the oriented robot footprint as a PolygonStamped at the current pose."""
         if self._footprint_pub is None:
             return
         pose = self.get_robot_pose()
@@ -707,7 +810,11 @@ class Costmap2DROS(LifecycleNode):
         """
         Look up the current robot pose in the global frame via TF.
 
-        Returns None on failure.
+        Returns
+        -------
+        PoseStamped or None
+            The robot pose in the global frame, or ``None`` on failure.
+
         """
         if self._tf_buffer is None:
             return None
@@ -735,18 +842,36 @@ class Costmap2DROS(LifecycleNode):
         input_pose: PoseStamped,
     ) -> Optional[PoseStamped]:
         """
-        Transform *input_pose* into the global frame.
+        Transform the input pose into the global frame of the costmap.
+
+        Parameters
+        ----------
+        input_pose : PoseStamped
+            The pose to transform.
+
+        Returns
+        -------
+        PoseStamped or None
+            The pose expressed in the global frame, or ``None`` if the
+            transform failed.
+
         """
         if self._tf_buffer is None:
             return None
         try:
-            return self._tf_buffer.transform(
+            transformed_pose = self._tf_buffer.transform(
                 input_pose,
                 self._global_frame,
                 timeout=rclpy.duration.Duration(
                     seconds=self._transform_tolerance
                 ),
             )
+            if isinstance(transformed_pose, PoseStamped):
+                return transformed_pose
+            self.get_logger().error(
+                'transformPoseToGlobalFrame failed: unexpected transformed type'
+            )
+            return None
         except Exception as e:
             self.get_logger().error(f'transformPoseToGlobalFrame failed: {e}')
             return None
@@ -755,9 +880,27 @@ class Costmap2DROS(LifecycleNode):
     # Services
     # ------------------------------------------------------------------
 
-    def _get_costs_callback(self, request, response):
+    def _get_costs_callback(
+        self,
+        request: GetCosts.Request,
+        response: GetCosts.Response,
+    ) -> GetCosts.Response:
         """
-        Return cost at one or more world-frame points.
+        Return the cost at one or more world-frame points.
+
+        Parameters
+        ----------
+        request : GetCosts.Request
+            The service request holding the poses to query.
+        response : GetCosts.Response
+            The service response; its ``costs`` field is filled in.
+
+        Returns
+        -------
+        GetCosts.Response
+            The response with one cost per requested pose (``-1.0`` when a
+            pose is out of bounds or could not be transformed).
+
         """
         costmap = self._layered_costmap.get_costmap()
         costs = []
@@ -781,9 +924,7 @@ class Costmap2DROS(LifecycleNode):
         return response
 
     def reset_layers(self) -> None:
-        """
-        Reset each individual layer.
-        """
+        """Reset each individual layer."""
         if self._layered_costmap:
             for layer in self._layered_costmap.get_plugins():
                 layer.reset()
@@ -794,9 +935,23 @@ class Costmap2DROS(LifecycleNode):
     # Dynamic parameters
     # ------------------------------------------------------------------
 
-    def _dynamic_parameters_callback(self, params) -> SetParametersResult:
+    def _dynamic_parameters_callback(
+        self,
+        params: List[_rp.Parameter]
+    ) -> SetParametersResult:
         """
         Handle dynamic parameter changes at runtime.
+
+        Parameters
+        ----------
+        params : list of rclpy.parameter.Parameter
+            The parameters being set.
+
+        Returns
+        -------
+        SetParametersResult
+            Whether the parameter update was accepted.
+
         """
         result = SetParametersResult()
         result.successful = True
@@ -854,50 +1009,131 @@ class Costmap2DROS(LifecycleNode):
     # ------------------------------------------------------------------
 
     def get_costmap(self) -> Optional[Costmap2D]:
+        """
+        Return the master costmap which receives updates from all the layers.
+
+        Returns
+        -------
+        Costmap2D or None
+            The master costmap, or ``None`` if not yet configured.
+
+        """
         if self._layered_costmap:
             return self._layered_costmap.get_costmap()
         return None
 
     def get_layered_costmap(self) -> Optional[LayeredCostmap]:
+        """
+        Get the layered costmap object used in the node.
+
+        Returns
+        -------
+        LayeredCostmap or None
+            The layered costmap, or ``None`` if not yet configured.
+
+        """
         return self._layered_costmap
 
     def get_name(self) -> str:
+        """
+        Return the costmap name.
+
+        Returns
+        -------
+        str
+            The costmap node name.
+
+        """
         return self._name
 
     def get_global_frame_id(self) -> str:
+        """
+        Return the global frame of the costmap.
+
+        Returns
+        -------
+        str
+            The global frame id.
+
+        """
         return self._global_frame
 
     def get_base_frame_id(self) -> str:
+        """
+        Return the robot base (local) frame of the costmap.
+
+        Returns
+        -------
+        str
+            The robot base frame id.
+
+        """
         return self._robot_base_frame
 
-    def get_tf_buffer(self):
-        """Return the TF2 buffer."""
+    def get_tf_buffer(self) -> Optional[Buffer]:
+        """
+        Return the TF2 buffer.
+
+        Returns
+        -------
+        tf2_ros.Buffer or None
+            The TF buffer, or ``None`` if not yet configured.
+
+        """
         return self._tf_buffer
 
     def get_transform_tolerance(self) -> float:
+        """
+        Return the tolerable delay in transform (tf) data, in seconds.
+
+        Returns
+        -------
+        float
+            The transform tolerance in seconds.
+
+        """
         return self._transform_tolerance
 
     def get_robot_radius(self) -> float:
+        """
+        Return the robot radius used when the footprint is defined as a circle.
+
+        Returns
+        -------
+        float
+            The robot radius in metres.
+
+        """
         return self._robot_radius
 
     def is_current(self) -> bool:
+        """
+        Return whether the costmap is current (delegates to the layered costmap).
+
+        Returns
+        -------
+        bool
+            Whether the costmap is current.
+
+        """
         if self._layered_costmap:
             return self._layered_costmap.is_current()
         return False
 
-    def wait_until_current(self, timeout) -> None:
+    def wait_until_current(self, timeout: rclpy.duration.Duration) -> None:
         """
         Block until the costmap is current or *timeout* expires.
 
         Parameters
         ----------
-        timeout :
-            ``rclpy.duration.Duration`` maximum time to wait.
+        timeout : rclpy.duration.Duration
+            Maximum time to wait.
 
         Raises
         ------
         RuntimeError
             If the timeout expires before the costmap becomes current.
+
         """
         period = 1.0 / 100.0  # 100 Hz
         waiting_start = self.get_clock().now()
@@ -906,13 +1142,40 @@ class Costmap2DROS(LifecycleNode):
                 raise RuntimeError('Costmap timed out waiting for update')
             time.sleep(period)
 
-    def get_footprint(self) -> list:
+    def get_footprint(self) -> List[Tuple[float, float]]:
+        """
+        Return the current (padded) footprint of the robot as a list of points.
+
+        Returns
+        -------
+        list of tuple of float
+            The padded footprint as ``(x, y)`` points.
+
+        """
         return self._padded_footprint
 
-    def get_unpadded_footprint(self) -> list:
+    def get_unpadded_footprint(self) -> List[Tuple[float, float]]:
+        """
+        Return the current unpadded footprint of the robot as a list of points.
+
+        Returns
+        -------
+        list of tuple of float
+            The unpadded footprint as ``(x, y)`` points.
+
+        """
         return self._unpadded_footprint
 
     def is_using_radius(self) -> bool:
+        """
+        Return whether the footprint is a circle of ``robot_radius`` rather than a polygon.
+
+        Returns
+        -------
+        bool
+            ``True`` if a circular ``robot_radius`` footprint is in use.
+
+        """
         return self._use_radius
 
 
@@ -925,6 +1188,19 @@ def _add_namespaces(parent: str, local: str) -> str:
     Join a parent namespace and a local name into a fully-qualified namespace.
 
     Handles the root namespace and any trailing slashes in the parent.
+
+    Parameters
+    ----------
+    parent : str
+        The parent namespace (may be empty or ``/``).
+    local : str
+        The local name to append.
+
+    Returns
+    -------
+    str
+        The fully-qualified namespace.
+
     """
     if not parent or parent == '/':
         return '/' + local
@@ -932,7 +1208,20 @@ def _add_namespaces(parent: str, local: str) -> str:
 
 
 def _yaw_from_pose_stamped(pose: PoseStamped) -> float:
-    """Extract yaw from a PoseStamped quaternion."""
+    """
+    Extract yaw from a PoseStamped quaternion.
+
+    Parameters
+    ----------
+    pose : PoseStamped
+        The pose whose orientation quaternion is converted.
+
+    Returns
+    -------
+    float
+        The yaw angle in radians.
+
+    """
     q = pose.pose.orientation
     siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
     cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
@@ -943,7 +1232,16 @@ def _yaw_from_pose_stamped(pose: PoseStamped) -> float:
 # Entry point
 # ---------------------------------------------------------------------------
 
-def main(args=None):
+def main(args: Optional[List[str]] = None) -> None:
+    """
+    Run a standalone ``Costmap2DROS`` node until interrupted.
+
+    Parameters
+    ----------
+    args : list of str, optional
+        Command-line arguments forwarded to ``rclpy.init``.
+
+    """
     rclpy.init(args=args)
     try:
         node = Costmap2DROS()

@@ -25,44 +25,27 @@ Plugin type string:
     ``"nav2_costmap_2d_py/StaticLayer"``
 """
 
-import math
-from typing import Any, Optional
+from typing import Any, List, Optional
 
-from rclpy.qos import (
-    QoSProfile,
-    QoSDurabilityPolicy,
-    QoSHistoryPolicy,
-    QoSReliabilityPolicy,
-)
-
-from nav_msgs.msg import OccupancyGrid
-
-from nav2_costmap_2d_py.core.costmap_layer import CostmapLayer
+from nav2_costmap_2d_py.core.cost_values import FREE_SPACE, LETHAL_OBSTACLE, NO_INFORMATION
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
-from nav2_costmap_2d_py.core.cost_values import (
-    FREE_SPACE, INSCRIBED_INFLATED_OBSTACLE, LETHAL_OBSTACLE, NO_INFORMATION,
-)
+from nav2_costmap_2d_py.core.costmap_layer import CostmapLayer
+from nav_msgs.msg import OccupancyGrid
+from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 
 _EPSILON = 1e-6
 
 
 class StaticLayer(CostmapLayer):
     """
-    Costmap layer populated from a static occupancy-grid map.
+    Take in a map generated from SLAM to add costs to the costmap.
 
-    Parameters (under ``<name>.``):
-      enabled               (bool,  default True)
-      map_topic             (str,   default 'map')
-      subscribe_to_updates  (bool,  default False)
-      track_unknown_space   (bool,  default True)
-      use_maximum           (bool,  default False)
-      lethal_cost_threshold (int,   default 100)
-      unknown_cost_value    (int,   default -1  → 255)
-      trinary_costmap       (bool,  default True)
-      transform_tolerance   (float, default 0.0)
+    Reads a static occupancy grid from the map topic and writes it into the
+    master costmap.
     """
 
     def __init__(self) -> None:
+        """Initialize static layer defaults."""
         super().__init__()
         self._map_topic = 'map'
         self._subscribe_to_updates = False
@@ -89,10 +72,11 @@ class StaticLayer(CostmapLayer):
     # ------------------------------------------------------------------
 
     def on_initialize(self) -> None:
+        """Initialize the layer on startup: read parameters and subscribe to the map topic."""
         node = self._node
         name = self._name
 
-        def _p(param, default):
+        def _p(param: str, default: Any) -> Any:
             full = f'{name}.{param}'
             if not node.has_parameter(full):
                 node.declare_parameter(full, default)
@@ -151,8 +135,28 @@ class StaticLayer(CostmapLayer):
             f'[StaticLayer] "{name}" subscribing to "{self._map_topic}"'
         )
 
-    def update_bounds(self, robot_x, robot_y, robot_yaw,
-                      min_x, min_y, max_x, max_y) -> None:
+    def update_bounds(
+        self,
+        robot_x: float,
+        robot_y: float,
+        robot_yaw: float,
+        min_x: List[float],
+        min_y: List[float],
+        max_x: List[float],
+        max_y: List[float],
+    ) -> None:
+        """
+        Update the bounds of the master costmap by this layer's update dimensions.
+
+        Parameters
+        ----------
+        robot_x, robot_y, robot_yaw : float
+            Current robot pose in the global frame.
+        min_x, min_y, max_x, max_y : list of float
+            Single-element lists holding the update window bounds, expanded in
+            place.
+
+        """
         if not self._enabled:
             return
         if not self._has_updated_data:
@@ -167,9 +171,27 @@ class StaticLayer(CostmapLayer):
         self.touch(wx0, wy0, min_x, min_y, max_x, max_y)
         self.touch(wx1, wy1, min_x, min_y, max_x, max_y)
 
-    def update_costs(self, master_grid: Costmap2D,
-                     min_i: int, min_j: int,
-                     max_i: int, max_j: int) -> None:
+    def update_costs(
+        self,
+        master_grid: Costmap2D,
+        min_i: int,
+        min_j: int,
+        max_i: int,
+        max_j: int
+    ) -> None:
+        """
+        Update the costs in the master costmap within the given window.
+
+        Parameters
+        ----------
+        master_grid : Costmap2D
+            The master costmap to write the static map into.
+        min_i, min_j : int
+            Lower x/y boundary of the window to update, in cells.
+        max_i, max_j : int
+            Upper x/y boundary of the window to update, in cells.
+
+        """
         if not self._enabled or not self._map_received:
             return
 
@@ -181,9 +203,19 @@ class StaticLayer(CostmapLayer):
         self._has_updated_data = False
 
     def reset(self) -> None:
+        """Reset this costmap layer, forcing a re-publish on the next cycle."""
         self._has_updated_data = True   # Force re-publish on next cycle
 
     def is_clearable(self) -> bool:
+        """
+        Return whether clearing operations should be processed on this layer.
+
+        Returns
+        -------
+        bool
+            Always ``False``; the static layer is never cleared.
+
+        """
         return False
 
     # ------------------------------------------------------------------
@@ -192,7 +224,14 @@ class StaticLayer(CostmapLayer):
 
     def _map_callback(self, msg: OccupancyGrid) -> None:
         """
-        Receives the full static map and copies it into this layer.
+        Update the costmap's map from the map_server (full map callback).
+
+        Parameters
+        ----------
+        msg : OccupancyGrid
+            The full static map, resizing the layer (or the whole layered
+            costmap) if its geometry changed.
+
         """
         node = self._node
         new_w = msg.info.width
@@ -232,9 +271,15 @@ class StaticLayer(CostmapLayer):
         self._has_updated_data = True
         self._current = True
 
-    def _map_update_callback(self, msg) -> None:
+    def _map_update_callback(self, msg: Any) -> None:
         """
-        Handles OccupancyGridUpdate (partial map update).
+        Update the costmap's map with an update in a particular area (partial update).
+
+        Parameters
+        ----------
+        msg : map_msgs.msg.OccupancyGridUpdate
+            The incremental map update message.
+
         """
         if not self._map_received:
             return
@@ -264,7 +309,18 @@ class StaticLayer(CostmapLayer):
 
     def _interpret_value(self, value: int) -> int:
         """
-        Convert an OccupancyGrid value (0..100, -1) to a costmap cost.
+        Interpret a value from the static map (0..100, -1) to convert it into a cost.
+
+        Parameters
+        ----------
+        value : int
+            The raw OccupancyGrid value (``-1`` for unknown, otherwise 0-100).
+
+        Returns
+        -------
+        int
+            The corresponding costmap cost value.
+
         """
         if value == -1:
             # Unknown

@@ -18,38 +18,39 @@ Layer for nav2_costmap_2d_py.
 
 Abstract base class for all costmap layer plugins.
 
-Plugin authors subclass this and implement at minimum:
-  - ``on_initialize()``
-  - ``update_bounds()``
-  - ``update_costs()``
-
-The ``initialize()`` method is called by :class:`LayeredCostmap` and must
-**not** be overridden – override ``on_initialize()`` instead (same pattern
-as the C++ ``onInitialize()`` hook).
-
 It mirrors the nav2_costmap_2d::Layer from the C++ implementation.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Any, Optional, Tuple
+from typing import Any, List, Tuple, TYPE_CHECKING
 
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
 
+if TYPE_CHECKING:
+    # Imported only for type hints; importing at runtime would create a
+    # circular import (layered_costmap imports Layer under TYPE_CHECKING too).
+    from nav2_costmap_2d_py.core.layered_costmap import LayeredCostmap
+
 
 class Layer(ABC):
-    """
-    Abstract base class for costmap layer plugins.
-    """
+    """Abstract base class for costmap layer plugins."""
 
     def __init__(self) -> None:
+        """Initialize the layer state with defaults."""
         self._name: str = ''
         self._enabled: bool = True
         self._current: bool = False
-        self._layered_costmap: Optional[Any] = None   # LayeredCostmap reference (set by initialize)
-        self._tf_buffer: Optional[Any] = None
-        self._node: Optional[Any] = None
+        # Typed as Any (not Optional): these are assigned real objects in
+        # initialize() before any layer method runs. They come from untyped
+        # sources anyway, so Any avoids ~25 spurious mypy union-attr errors
+        # across all layer/filter subclasses without per-call asserts.
+        self._layered_costmap: Any = None   # LayeredCostmap, set by initialize
+        self._tf_buffer: Any = None
+        self._node: Any = None
         # Footprint cache (set by LayeredCostmap.set_footprint)
-        self._footprint: list = []
+        self._footprint: List[Tuple[float, float]] = []
 
     # ------------------------------------------------------------------
     # Public lifecycle API – called by LayeredCostmap
@@ -57,15 +58,27 @@ class Layer(ABC):
 
     def initialize(
         self,
-        layered_costmap,       # LayeredCostmap
+        layered_costmap: 'LayeredCostmap',
         name: str,
-        tf_buffer,
-        node,
+        tf_buffer: Any,
+        node: Any,
     ) -> None:
         """
-        Called once by LayeredCostmap during configuration.
+        Initialize the layer on startup. Called once by LayeredCostmap during configuration.
 
         Do **not** override this; override ``on_initialize()`` instead.
+
+        Parameters
+        ----------
+        layered_costmap : LayeredCostmap
+            The parent LayeredCostmap that owns this layer.
+        name : str
+            The name of the layer.
+        tf_buffer : tf2_ros.Buffer
+            The tf2 buffer used for coordinate transforms.
+        node : Costmap2DROS
+            The lifecycle node that owns the costmap.
+
         """
         self._layered_costmap = layered_costmap
         self._name = name
@@ -79,7 +92,7 @@ class Layer(ABC):
 
     def on_initialize(self) -> None:
         """
-        Plugin-specific initialisation hook.
+        Implement subclass-specific initialization. Called at the end of ``initialize()``.
 
         Called after ``initialize()`` sets up the layer references.
         Override this instead of ``initialize()``.
@@ -92,22 +105,26 @@ class Layer(ABC):
         robot_x: float,
         robot_y: float,
         robot_yaw: float,
-        min_x: list,   # [float] – mutable reference via single-element list
-        min_y: list,
-        max_x: list,
-        max_y: list,
+        min_x: List[float],   # mutable reference via single-element list
+        min_y: List[float],
+        max_x: List[float],
+        max_y: List[float],
     ) -> None:
         """
-        Expand the bounding box to include this layer's dirty region.
+        Poll the plugin for how much of the costmap it needs to update.
+
+        Called by LayeredCostmap to expand the bounding box to include this
+        layer's dirty region.
 
         Parameters
         ----------
-        robot_x, robot_y, robot_yaw :
+        robot_x, robot_y, robot_yaw : float
             Current robot pose in the global frame.
-        min_x, min_y, max_x, max_y :
+        min_x, min_y, max_x, max_y : list of float
             Single-element lists used as mutable references (Python's
             substitute for C++ ``double &`` output params).
             Expand them as needed; do NOT shrink.
+
         """
         ...
 
@@ -121,32 +138,33 @@ class Layer(ABC):
         max_j: int,
     ) -> None:
         """
-        Write this layer's costs into *master_grid* within the given bounds.
+        Actually update the underlying costmap, only within the bounds from ``update_bounds()``.
 
         Parameters
         ----------
-        master_grid :
+        master_grid : Costmap2D
             The combined costmap (output of LayeredCostmap).
-        min_i, min_j, max_i, max_j :
+        min_i, min_j, max_i, max_j : int
             Cell-index bounds (exclusive upper end) of the dirty region.
+
         """
         ...
 
     def activate(self) -> None:
-        """Called during on_activate(). Default: no-op."""
+        """Restart publishers if they've been stopped."""
         pass
 
     def deactivate(self) -> None:
-        """Called during on_deactivate(). Default: no-op."""
+        """Stop publishers."""
         pass
 
     def reset(self) -> None:
-        """Reset layer state. Called by resetLayers(). Default: clears current_."""
+        """Reset this costmap layer. Called by resetLayers(); default clears the current flag."""
         self._current = False
 
     def match_size(self) -> None:
         """
-        Resize this layer's internal grid to match the master costmap.
+        Make this layer match the size of the parent costmap.
 
         Default implementation is a no-op; override in layers that keep their
         own Costmap2D.
@@ -154,18 +172,19 @@ class Layer(ABC):
         pass
 
     def on_footprint_changed(self) -> None:
-        """
-        Called when the robot footprint changes.
-
-        Default: no-op.
-        """
+        """Handle a footprint change. Called by LayeredCostmap whenever the footprint changes."""
         pass
 
     def is_clearable(self) -> bool:
         """
-        Whether this layer can be cleared (e.g. by ClearCostmapService).
+        Return whether clearing operations should be processed on this layer.
 
-        Default: False.  Override in obstacle layers.
+        Returns
+        -------
+        bool
+            Whether the layer is clearable. Default ``False``; override in
+            obstacle layers.
+
         """
         return False
 
@@ -175,26 +194,77 @@ class Layer(ABC):
 
     @property
     def name(self) -> str:
+        """
+        Get the name of the costmap layer.
+
+        Returns
+        -------
+        str
+            The layer name.
+
+        """
         return self._name
 
     @property
     def enabled(self) -> bool:
+        """
+        Get whether the layer is enabled.
+
+        Returns
+        -------
+        bool
+            Whether the layer is enabled.
+
+        """
         return self._enabled
 
     @enabled.setter
     def enabled(self, val: bool) -> None:
+        """
+        Set whether the layer is enabled.
+
+        Parameters
+        ----------
+        val : bool
+            Whether the layer should be enabled.
+
+        """
         self._enabled = val
 
     def is_enabled(self) -> bool:
+        """
+        Get whether the layer is enabled.
+
+        Returns
+        -------
+        bool
+            Whether the layer is enabled.
+
+        """
         return self._enabled
 
     def is_current(self) -> bool:
         """
-        Return whether the layer's data is current (not stale).
+        Check whether all the data in the layer is up to date (not stale).
+
+        Returns
+        -------
+        bool
+            Whether the layer's data is current.
+
         """
         return self._current
 
     def get_name(self) -> str:
+        """
+        Get the name of the costmap layer.
+
+        Returns
+        -------
+        str
+            The layer name.
+
+        """
         return self._name
 
     def join_with_parent_namespace(self, topic: str) -> str:
@@ -207,6 +277,17 @@ class Layer(ABC):
         namespace segment and join the topic to the parent, exactly like the C++
         ``nav2_costmap_2d::Layer::joinWithParentNamespace``. Absolute topics
         (leading ``/``) are returned unchanged.
+
+        Parameters
+        ----------
+        topic : str
+            The (possibly relative) topic name to resolve.
+
+        Returns
+        -------
+        str
+            The topic joined to the parent namespace, or unchanged if absolute.
+
         """
         if topic and not topic.startswith('/'):
             node_ns = self._node.get_namespace()
@@ -214,12 +295,39 @@ class Layer(ABC):
             return f'{parent_ns}/{topic}'
         return topic
 
-    def get_layered_costmap(self):
+    def get_layered_costmap(self) -> 'LayeredCostmap':
+        """
+        Return the parent LayeredCostmap that owns this layer.
+
+        Returns
+        -------
+        LayeredCostmap
+            The parent layered costmap.
+
+        """
         return self._layered_costmap
 
-    def get_footprint(self) -> list:
+    def get_footprint(self) -> List[Tuple[float, float]]:
+        """
+        Return the layered costmap's footprint (convenience accessor).
+
+        Returns
+        -------
+        list of tuple of float
+            The robot footprint as ``(x, y)`` points.
+
+        """
         return self._footprint
 
-    def set_footprint(self, footprint: list) -> None:
+    def set_footprint(self, footprint: List[Tuple[float, float]]) -> None:
+        """
+        Set the cached footprint and notify the layer via ``on_footprint_changed()``.
+
+        Parameters
+        ----------
+        footprint : list of tuple of float
+            The robot footprint as a list of ``(x, y)`` points.
+
+        """
         self._footprint = footprint
         self.on_footprint_changed()

@@ -163,7 +163,7 @@ class Costmap2DROS(LifecycleNode):
         self._stopped = True
         self._stop_updates = False
 
-        # Plugin provider (nav2_core_py plugin.xml discovery pattern)
+        # Plugin provider (nav2_core_py export-tag discovery pattern)
         self._plugin_provider = PluginProvider(
             export_tag='nav2_costmap_2d_py',
             base_class_type='nav2_costmap_2d_py.core.layer.Layer',

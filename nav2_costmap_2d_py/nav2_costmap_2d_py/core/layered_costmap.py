@@ -201,7 +201,7 @@ class LayeredCostmap:
                     robot_y
                     - self._combined_costmap.size_y_meters / 2.0
                 )
-                self._combined_costmap.move_map(new_origin_x, new_origin_y)
+                self._combined_costmap.update_origin(new_origin_x, new_origin_y)
                 for plugin in self._plugins:
                     plugin.match_size()
                 for f in self._filters:
@@ -227,10 +227,10 @@ class LayeredCostmap:
                 self._initialized = True
                 return
 
-            x0, y0 = self._combined_costmap.world_to_map_enforced_bounds(
+            x0, y0 = self._combined_costmap.world_to_map_enforce_bounds(
                 min_x[0], min_y[0]
             )
-            xn, yn = self._combined_costmap.world_to_map_enforced_bounds(
+            xn, yn = self._combined_costmap.world_to_map_enforce_bounds(
                 max_x[0], max_y[0]
             )
             xn = min(xn + 1, self._combined_costmap.size_x)
@@ -341,7 +341,7 @@ class LayeredCostmap:
         """Get the global frame the costmap is expressed in."""
         return self._global_frame
 
-    def is_rolling_window(self) -> bool:
+    def is_rolling(self) -> bool:
         """Return whether this costmap is a rolling window."""
         return self._rolling_window
 

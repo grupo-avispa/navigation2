@@ -21,26 +21,27 @@ Publishes a Costmap2D as a ``nav_msgs/msg/OccupancyGrid`` (and optionally
 It mirrors the nav2_costmap_2d::Costmap2DPublisher from the C++ implementation.
 """
 
-from typing import Optional
+from typing import Any, List, Optional
 
-import numpy as np
-from rclpy.qos import (
-    QoSProfile,
-    QoSDurabilityPolicy,
-    QoSHistoryPolicy,
-    QoSReliabilityPolicy,
-)
-
-from nav_msgs.msg import OccupancyGrid
 from map_msgs.msg import OccupancyGridUpdate
+from nav2_costmap_2d_py.core.cost_values import (FREE_SPACE, INSCRIBED_INFLATED_OBSTACLE,
+                                                 LETHAL_OBSTACLE, NO_INFORMATION)
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
-from nav2_costmap_2d_py.core.cost_values import (
-    FREE_SPACE, INSCRIBED_INFLATED_OBSTACLE, LETHAL_OBSTACLE, NO_INFORMATION,
-)
+from nav_msgs.msg import OccupancyGrid
+import numpy as np
+from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 
 
-def _build_cost_translation_table() -> list:
-    """Build a 256-element LUT from costmap cost → OccupancyGrid value."""
+def _build_cost_translation_table() -> List[int]:
+    """
+    Build a 256-element lookup table from costmap cost to OccupancyGrid value.
+
+    Returns
+    -------
+    list of int
+        The lookup table indexed by cost value (0-255).
+
+    """
     table = [0] * 256
     table[FREE_SPACE] = 0
     table[NO_INFORMATION] = -1
@@ -59,7 +60,7 @@ _COST_TRANSLATION_TABLE = _build_cost_translation_table()
 _COST_TRANSLATION_TABLE_NP = np.asarray(_COST_TRANSLATION_TABLE, dtype=np.int8)
 
 
-def _translate_costmap(raw: bytearray) -> list:
+def _translate_costmap(raw: bytearray) -> List[int]:
     """
     Vectorised replacement for ``[_COST_TRANSLATION_TABLE[c] for c in raw]``.
 
@@ -67,6 +68,17 @@ def _translate_costmap(raw: bytearray) -> list:
     publish and held the GIL for hundreds of ms on large maps, freezing the
     process and making the planner miss the BT's goal-acknowledge timeout. The
     NumPy LUT index runs in C and releases the GIL.
+
+    Parameters
+    ----------
+    raw : bytearray
+        The raw costmap buffer of cost values (0-255).
+
+    Returns
+    -------
+    list of int
+        The translated OccupancyGrid values (-1, 0-100).
+
     """
     arr = np.frombuffer(raw, dtype=np.uint8)
     return _COST_TRANSLATION_TABLE_NP[arr].tolist()
@@ -91,17 +103,38 @@ class Costmap2DPublisher:
         incremental OccupancyGridUpdate when possible.
     map_vis_z : float
         Z offset for the map origin in visualisation (metres).
+
     """
 
     def __init__(
         self,
-        node,
+        node: Any,
         costmap: Costmap2D,
         global_frame: str,
         topic_name: str,
         always_send_full_costmap: bool = False,
         map_vis_z: float = 0.0,
     ) -> None:
+        """
+        Initialize the publisher, creating the OccupancyGrid and OccupancyGridUpdate publishers.
+
+        Parameters
+        ----------
+        node : Any
+            The ROS2 lifecycle node that owns the publishers.
+        costmap : Costmap2D
+            Reference to the combined costmap to publish.
+        global_frame : str
+            Frame ID for the published messages.
+        topic_name : str
+            Base topic name (e.g. ``"costmap"``).
+        always_send_full_costmap : bool
+            If True, always publish the full OccupancyGrid; otherwise send
+            incremental OccupancyGridUpdate when possible.
+        map_vis_z : float
+            Z offset for the map origin in visualization (metres).
+
+        """
         self._node = node
         self._costmap = costmap
         self._global_frame = global_frame
@@ -137,9 +170,11 @@ class Costmap2DPublisher:
     # ------------------------------------------------------------------
 
     def on_activate(self) -> None:
+        """Activate the publisher so subsequent calls publish data."""
         self._active = True
 
     def on_deactivate(self) -> None:
+        """Deactivate the publisher so it stops publishing data."""
         self._active = False
 
     # ------------------------------------------------------------------
@@ -148,8 +183,9 @@ class Costmap2DPublisher:
 
     def publish_costmap(self) -> None:
         """
-        Publish the costmap.
+        Publish the visualization data over ROS.
 
+        Only publishes when the publisher is active.
         If ``always_send_full_costmap`` is True or no previous snapshot
         exists, publishes a full ``OccupancyGrid``; otherwise publishes an
         incremental ``OccupancyGridUpdate``.
@@ -184,7 +220,15 @@ class Costmap2DPublisher:
             self._saved_size_y = current_size_y
 
     def _publish_full(self, costmap: Costmap2D) -> None:
-        """Publish a full OccupancyGrid."""
+        """
+        Publish a full OccupancyGrid.
+
+        Parameters
+        ----------
+        costmap : Costmap2D
+            The costmap whose full contents are published.
+
+        """
         msg = OccupancyGrid()
         now = self._node.get_clock().now().to_msg()
         msg.header.stamp = now
@@ -203,7 +247,15 @@ class Costmap2DPublisher:
         self._costmap_pub.publish(msg)
 
     def _publish_update(self, costmap: Costmap2D) -> None:
-        """Publish an OccupancyGridUpdate (incremental)."""
+        """
+        Publish an OccupancyGridUpdate (incremental).
+
+        Parameters
+        ----------
+        costmap : Costmap2D
+            The costmap whose contents are published as an incremental update.
+
+        """
         msg = OccupancyGridUpdate()
         now = self._node.get_clock().now().to_msg()
         msg.header.stamp = now

@@ -1,0 +1,11 @@
+<class_libraries>
+  <library path="">
+    <class name="PurePursuitController" type="nav2_controller_example_py.PurePursuitController.PurePursuitController" base_class_type="nav2_core_py.controller.Controller">
+      <description>
+        Classic Pure Pursuit local controller plugin for nav2_controller_py.
+        Computes curvature commands to steer the robot toward a lookahead
+        point on the global path. Self-contained; no costmap required.
+      </description>
+    </class>
+  </library>
+</class_libraries>

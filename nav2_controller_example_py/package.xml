@@ -1,26 +1,29 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>nav2_core_py</name>
+  <name>nav2_controller_example_py</name>
   <version>1.4.0</version>
-  <description>A set of headers for plugins core to the Nav2 stack. Python port of nav2_core</description>
+  <description>Pure Pursuit controller plugin for nav2_controller_py.</description>
+
   <maintainer email="ajtudela@gmail.com">Alberto Tudela</maintainer>
   <license>Apache-2.0</license>
 
-  <exec_depend>ament_index_python</exec_depend>
+  <buildtool_depend>ament_python</buildtool_depend>
+
   <exec_depend>rclpy</exec_depend>
-  <exec_depend>builtin_interfaces</exec_depend>
-  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav2_core_py</exec_depend>
+  <exec_depend>nav2_controller_py</exec_depend>
+  <exec_depend>nav2_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
-  <test_depend>ament_mypy</test_depend>
   <test_depend>ament_pep257</test_depend>
-  <test_depend>ament_xmllint</test_depend>
   <test_depend>python3-pytest</test_depend>
 
   <export>
     <build_type>ament_python</build_type>
+    <nav2_controller_py plugin="${prefix}/plugin.xml"/>
   </export>
 </package>

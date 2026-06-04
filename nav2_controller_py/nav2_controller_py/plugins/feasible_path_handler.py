@@ -98,7 +98,7 @@ class FeasiblePathHandler(PathHandler):
             f'{plugin_name}.minimum_rotation_angle', 0.785)
 
         if self._max_robot_pose_search_dist < 0.0:
-            self._logger.warn(
+            self._logger.warning(
                 'Max robot search distance is negative, setting to max to search every point '
                 'on path for the closest value.')
             self._max_robot_pose_search_dist = sys.float_info.max
@@ -208,7 +208,7 @@ class FeasiblePathHandler(PathHandler):
 
     def _get_costmap_max_extent(self) -> float:
         costmap = self._costmap_ros.get_costmap()
-        max_costmap_dim_meters = max(costmap.size_x_meters(), costmap.size_y_meters())
+        max_costmap_dim_meters = max(costmap.size_x_meters, costmap.size_y_meters)
         return max_costmap_dim_meters / 2.0
 
     @staticmethod
@@ -250,7 +250,7 @@ class FeasiblePathHandler(PathHandler):
             if not parameter.name.startswith(prefix):
                 continue
             if isinstance(parameter.value, float) and parameter.value < 0.0:
-                self._logger.warn(
+                self._logger.warning(
                     f"The value of parameter '{parameter.name}' is incorrectly set to "
                     f'{parameter.value}, it should be >=0. Ignoring parameter update.')
                 result.successful = False

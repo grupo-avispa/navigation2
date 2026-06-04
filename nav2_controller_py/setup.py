@@ -25,7 +25,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'controller_server = nav2_controller_py.controller_server:main',
+            'nav2_controller = nav2_controller_py.controller_server:main',
         ],
     },
 )

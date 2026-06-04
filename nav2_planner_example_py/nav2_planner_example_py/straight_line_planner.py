@@ -17,9 +17,8 @@ import math
 from typing import List
 
 from geometry_msgs.msg import PoseStamped
-from nav_msgs.msg import Path
-
 from nav2_core_py.global_planner import GlobalPlanner
+from nav_msgs.msg import Path
 
 
 class StraightLinePlanner(GlobalPlanner):
@@ -35,16 +34,50 @@ class StraightLinePlanner(GlobalPlanner):
         self._tf_buffer = tf_buffer
         self._costmap = costmap_ros
 
-        # Declare / read plugin-specific parameters
-        self._node.declare_parameter(f'{name}.interpolation_resolution', 0.1)
-        self._resolution = self._node.get_parameter(
-            f'{name}.interpolation_resolution'
-        ).value
+        # Declare / read plugin-specific parameters. declare_or_get_parameter is
+        # idempotent, so a configure -> cleanup -> configure cycle (e.g. a
+        # lifecycle reset after a server respawn) does not raise
+        # ParameterAlreadyDeclaredException.
+        self._resolution = self.declare_or_get_parameter(
+            f'{name}.interpolation_resolution', 0.1
+        )
 
         self._node.get_logger().info(
-            f"[{name}] StraightLinePlanner configured "
-            f"(resolution={self._resolution}m)"
+            f'[{name}] StraightLinePlanner configured '
+            f'(resolution={self._resolution}m)'
         )
+
+    def declare_or_get_parameter(self, name, default_value):
+        """
+        Declare a parameter if not already declared, or get its value if it exists.
+
+        Mirrors ``nav2_planner_py.parameter_handler.declare_or_get_parameter``:
+        returns the current value if the parameter already exists, otherwise
+        declares it with *default_value* and returns the (possibly overridden)
+        value applied from the parameter YAML.
+
+        Parameters
+        ----------
+        name : str
+            Fully-qualified parameter name.
+        default_value
+            Default value used if the parameter needs to be declared.
+
+        Returns
+        -------
+        The current or default value of the parameter.
+
+        """
+        if self._node.has_parameter(name):
+            return self._node.get_parameter(name).value
+        try:
+            return self._node.declare_parameter(name, default_value).value
+        except Exception as ex:  # noqa: BLE001
+            self._node.get_logger().warning(
+                f"Could not declare parameter '{name}' with default value "
+                f"'{default_value}': {ex}. Using default value."
+            )
+            return default_value
 
     def cleanup(self):
         self._node.get_logger().info(f'[{self._name}] Cleaning up')

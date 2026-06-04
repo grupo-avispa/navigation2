@@ -501,7 +501,7 @@ class ControllerServer(LifecycleNode):
                 else:
                     wait_msg = (f' Waited {costmap_wait:.4f}s for costmap update.'
                                 if costmap_wait > 0.0 else '')
-                    self.get_logger().warn(
+                    self.get_logger().warning(
                         'Control loop missed its desired rate of '
                         f'{self._params.controller_frequency:.4f} Hz. Current loop rate is '
                         f'{1.0 / max(elapsed, 1e-9):.4f} Hz.{wait_msg}')
@@ -612,7 +612,7 @@ class ControllerServer(LifecycleNode):
         except NoValidControl as e:
             failure_tolerance = self._params.failure_tolerance
             if failure_tolerance > 0 or failure_tolerance == -1.0:
-                self.get_logger().warn(str(e))
+                self.get_logger().warning(str(e))
                 cmd_vel_2d = TwistStamped()
                 cmd_vel_2d.header.frame_id = self._costmap_ros.get_base_frame_id()
                 cmd_vel_2d.header.stamp = self.get_clock().now().to_msg()
@@ -769,7 +769,7 @@ class ControllerServer(LifecycleNode):
     def _find_controller_id(self, c_name: str) -> Optional[str]:
         if c_name not in self._controllers:
             if len(self._controllers) == 1 and not c_name:
-                self.get_logger().warn(
+                self.get_logger().warning(
                     'No controller was specified in action call. Server will use only plugin '
                     f'loaded {self._controller_ids_concat}. This warning will appear once.')
                 return next(iter(self._controllers))
@@ -783,7 +783,7 @@ class ControllerServer(LifecycleNode):
     def _find_goal_checker_id(self, c_name: str) -> Optional[str]:
         if c_name not in self._goal_checkers:
             if len(self._goal_checkers) == 1 and not c_name:
-                self.get_logger().warn(
+                self.get_logger().warning(
                     "No goal checker was specified in parameter 'current_goal_checker'. Server "
                     f'will use only plugin loaded {self._goal_checker_ids_concat}. This warning '
                     'will appear once.')
@@ -809,7 +809,7 @@ class ControllerServer(LifecycleNode):
             return None
         if c_name not in self._progress_checkers:
             if len(self._progress_checkers) == 1 and not c_name:
-                self.get_logger().warn(
+                self.get_logger().warning(
                     "No progress checker was specified in parameter 'current_progress_checker'. "
                     f'Server will use only plugin loaded {self._progress_checker_ids_concat}. '
                     'This warning will appear once.')
@@ -825,7 +825,7 @@ class ControllerServer(LifecycleNode):
     def _find_path_handler_id(self, c_name: str) -> Optional[str]:
         if c_name not in self._path_handlers:
             if len(self._path_handlers) == 1 and not c_name:
-                self.get_logger().warn(
+                self.get_logger().warning(
                     "No path handler was specified in parameter 'current_path_handler'. Server "
                     f'will use only plugin loaded {self._path_handler_ids_concat}. This warning '
                     'will appear once.')

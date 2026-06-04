@@ -30,7 +30,8 @@ from nav2_controller_py.geometry_utils import (cross_product_2d, distance_to_pat
                                                shortest_angular_distance)
 from nav_msgs.msg import Path
 from rclpy.duration import Duration
-import tf2_geometry_msgs  # type: ignore[import-untyped]  # noqa: F401
+from rclpy.time import Time
+import tf2_geometry_msgs  # type: ignore[import-untyped]
 import tf2_ros  # type: ignore[import-untyped]
 
 
@@ -71,9 +72,23 @@ def transform_pose_in_target_frame(
     if pose.header.frame_id == target_frame:
         return pose
     try:
-        return tf_buffer.transform(
+        out = tf_buffer.transform(
             pose, target_frame, timeout=Duration(seconds=transform_timeout))
-    except Exception:
+        out.header.frame_id = target_frame
+        return out
+    except tf2_ros.ExtrapolationException:
+        # The exact-time lookup extrapolated past the available TF data (common
+        # on the first goal, before a fresh map->odom is published). Fall back
+        # to the latest available transform, like nav2_controller's PathHandler.
+        try:
+            transform = tf_buffer.lookup_transform(
+                target_frame, pose.header.frame_id, Time())
+            out = tf2_geometry_msgs.do_transform_pose_stamped(pose, transform)
+            out.header.frame_id = target_frame
+            return out
+        except tf2_ros.TransformException:
+            return None
+    except tf2_ros.TransformException:
         return None
 
 

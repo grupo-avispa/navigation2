@@ -25,13 +25,17 @@ Plugin type string:
     ``"nav2_costmap_2d_py/InflationLayer"``
 """
 
-import heapq
-import math
-from typing import List, Tuple
+from typing import List
 
-from nav2_costmap_2d_py.core.cost_values import INSCRIBED_INFLATED_OBSTACLE, LETHAL_OBSTACLE
+from nav2_costmap_2d_py.core.cost_values import (
+    INSCRIBED_INFLATED_OBSTACLE,
+    LETHAL_OBSTACLE,
+    NO_INFORMATION,
+)
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
 from nav2_costmap_2d_py.core.layer import Layer
+import numpy as np
+from scipy import ndimage
 
 
 class InflationLayer(Layer):
@@ -50,12 +54,6 @@ class InflationLayer(Layer):
         self._cost_scaling_factor = 10.0
         self._inflate_unknown = False
         self._inflate_around_unknown = False
-
-        # Pre-computed distance/cost caches
-        self._cell_inflation_radius: int = 0
-        self._cached_costs: List[int] = []
-        self._cached_distances: List[float] = []
-        self._inflation_cells: List[Tuple[float, int, int, int]] = []
 
         self._need_reinflation = True
 
@@ -84,15 +82,7 @@ class InflationLayer(Layer):
         )
 
     def on_footprint_changed(self) -> None:
-        """Process footprint changes, recomputing the cell inflation radius and caches."""
-        if self._layered_costmap is None:
-            return
-        res = self._layered_costmap.get_costmap().resolution
-        if res > 0:
-            self._cell_inflation_radius = int(
-                math.ceil(self._inflation_radius / res)
-            )
-            self._compute_caches(res)
+        """Process footprint changes, forcing a full re-inflation on the next cycle."""
         self._need_reinflation = True
 
     def update_bounds(
@@ -154,12 +144,6 @@ class InflationLayer(Layer):
         if not self._enabled:
             return
 
-        res = master_grid.resolution
-        if self._cell_inflation_radius == 0:
-            self._cell_inflation_radius = int(math.ceil(self._inflation_radius / res))
-            self._compute_caches(res)
-
-        # BFS/Dijkstra-style inflation
         self._inflate(master_grid, min_i, min_j, max_i, max_j)
         self._current = True
 
@@ -169,57 +153,7 @@ class InflationLayer(Layer):
         self._current = False
 
     # ------------------------------------------------------------------
-    # Cost computation
-    # ------------------------------------------------------------------
-
-    def _cost_at_distance(self, distance: float) -> int:
-        """
-        Given a distance from an obstacle, compute the inflated cost.
-
-        Parameters
-        ----------
-        distance : float
-            The distance from the obstacle, in metres.
-
-        Returns
-        -------
-        int
-            The computed cost value.
-
-        """
-        if distance == 0.0:
-            return LETHAL_OBSTACLE
-        if distance <= self._layered_costmap.inscribed_radius:
-            return INSCRIBED_INFLATED_OBSTACLE
-        factor = math.exp(-self._cost_scaling_factor
-                          * (distance - self._layered_costmap.inscribed_radius))
-        cost = int((INSCRIBED_INFLATED_OBSTACLE - 1) * factor)
-        return max(1, cost) if cost > 0 else 0
-
-    def _compute_caches(self, resolution: float) -> None:
-        """
-        Generate the cost and distance lookup tables for distance-to-cost mapping.
-
-        Parameters
-        ----------
-        resolution : float
-            The costmap resolution in meters/cell, used to convert cell offsets
-            to world distances.
-
-        """
-        r = self._cell_inflation_radius + 2
-        size = (2 * r + 1) ** 2
-        self._cached_distances = [0.0] * size
-        self._cached_costs = [0] * size
-        for dy in range(-r, r + 1):
-            for dx in range(-r, r + 1):
-                dist = math.sqrt(dx * dx + dy * dy) * resolution
-                idx = (dy + r) * (2 * r + 1) + (dx + r)
-                self._cached_distances[idx] = dist
-                self._cached_costs[idx] = self._cost_at_distance(dist)
-
-    # ------------------------------------------------------------------
-    # BFS inflation
+    # Vectorised inflation
     # ------------------------------------------------------------------
 
     def _inflate(
@@ -231,7 +165,12 @@ class InflationLayer(Layer):
         max_j: int,
     ) -> None:
         """
-        Inflate lethal cells using a min-heap (distance-ordered BFS).
+        Inflate lethal cells using a vectorised Euclidean distance transform.
+
+        Instead of a per-cell BFS (which holds the GIL for seconds on a global
+        costmap and starves the lifecycle bond heartbeat), this computes the
+        distance from every cell to the nearest obstacle in one ``scipy``
+        call and maps those distances to costs with ``numpy``.
 
         Parameters
         ----------
@@ -244,43 +183,40 @@ class InflationLayer(Layer):
 
         """
         sx = master.size_x
-        arr = master.get_char_map()
+        sy = master.size_y
         res = master.resolution
+        inscribed = self._layered_costmap.inscribed_radius
 
-        seen = set()
-        heap: List[Tuple[float, int, int]] = []  # (dist, mx, my)
+        # Writable view sharing memory with the underlying bytearray.
+        grid = np.frombuffer(master.get_char_map(), dtype=np.uint8).reshape(sy, sx)
 
-        # Seed heap with lethal/inscribed cells in bounds
-        for j in range(min_j, max_j):
-            for i in range(min_i, max_i):
-                idx = j * sx + i
-                cost = arr[idx]
-                if cost == LETHAL_OBSTACLE or cost == INSCRIBED_INFLATED_OBSTACLE:
-                    heapq.heappush(heap, (0.0, i, j))
-                    seen.add((i, j))
+        # Obstacle seeds: lethal + inscribed cells (and unknown if requested).
+        obstacles = (grid == LETHAL_OBSTACLE) | (grid == INSCRIBED_INFLATED_OBSTACLE)
+        if self._inflate_around_unknown:
+            obstacles |= (grid == NO_INFORMATION)
+        if not obstacles.any():
+            return
 
-        while heap:
-            dist, cx, cy = heapq.heappop(heap)
-            if dist > self._inflation_radius:
-                break
+        # Distance (in metres) from every cell to the nearest obstacle.
+        # distance_transform_edt measures distance to the nearest zero, so we
+        # feed the complement of the obstacle mask.
+        dist_m = ndimage.distance_transform_edt(~obstacles) * res
 
-            inflated_cost = self._cost_at_distance(dist)
-            if inflated_cost == 0:
-                continue
+        # Vectorised distance -> cost mapping, mirroring _cost_at_distance.
+        within = dist_m <= self._inflation_radius
+        factor = np.exp(-self._cost_scaling_factor * (dist_m - inscribed))
+        cost = ((INSCRIBED_INFLATED_OBSTACLE - 1) * factor).astype(np.int32)
+        cost = np.where(cost > 0, np.clip(cost, 1, INSCRIBED_INFLATED_OBSTACLE - 1), 0)
 
-            idx = cy * sx + cx
-            existing = arr[idx]
-            if (existing != LETHAL_OBSTACLE
-                    and existing != INSCRIBED_INFLATED_OBSTACLE
-                    and inflated_cost > existing):
-                arr[idx] = inflated_cost
+        new_cost = np.zeros((sy, sx), dtype=np.uint8)
+        new_cost[within] = cost[within].astype(np.uint8)
+        new_cost[within & (dist_m <= inscribed)] = INSCRIBED_INFLATED_OBSTACLE
 
-            # Expand to neighbours
-            for ny in range(max(min_j, cy - 1), min(max_j, cy + 2)):
-                for nx in range(max(min_i, cx - 1), min(max_i, cx + 2)):
-                    if (nx, ny) in seen:
-                        continue
-                    ndist = math.sqrt((nx - cx) ** 2 + (ny - cy) ** 2) * res + dist
-                    if ndist <= self._inflation_radius:
-                        heapq.heappush(heap, (ndist, nx, ny))
-                        seen.add((nx, ny))
+        # Restrict writes to the dirty window and never lower existing costs or
+        # overwrite real obstacles.
+        win = (slice(min_j, max_j), slice(min_i, max_i))
+        sub = grid[win]
+        sub_new = new_cost[win]
+        free = (sub != LETHAL_OBSTACLE) & (sub != INSCRIBED_INFLATED_OBSTACLE)
+        update = free & (sub_new > sub)
+        sub[update] = sub_new[update]

@@ -27,6 +27,7 @@ from nav2_costmap_2d_py.core.cost_values import (
     FREE_SPACE,
     INSCRIBED_INFLATED_OBSTACLE,
     LETHAL_OBSTACLE,
+    NO_INFORMATION,
 )
 from nav2_costmap_2d_py.core.layered_costmap import (
     LayeredCostmap,
@@ -101,6 +102,37 @@ class TestInflationLayer(unittest.TestCase):
         self.layer.enabled = False
         self.layer.update_costs(master, 0, 0, 10, 10)
         self.assertEqual(master.get_cost(6, 5), FREE_SPACE)
+
+    def test_compute_cost(self) -> None:
+        """compute_cost mirrors the C++ piecewise mapping (distance in cells)."""
+        self.layer._resolution = 1.0
+        self.layer._inscribed_radius = 1.47
+        self.layer._cost_scaling_factor = 10.0
+        self.assertEqual(self.layer.compute_cost(0), LETHAL_OBSTACLE)
+        # 1 cell -> 1.0 m <= inscribed -> inscribed
+        self.assertEqual(self.layer.compute_cost(1), INSCRIBED_INFLATED_OBSTACLE)
+        # Beyond the inscribed radius the cost decays below inscribed.
+        far = self.layer.compute_cost(2)
+        self.assertGreater(far, FREE_SPACE)
+        self.assertLess(far, INSCRIBED_INFLATED_OBSTACLE)
+
+    def test_unknown_cell_promoted_to_inscribed(self) -> None:
+        """An unknown cell within the inscribed radius is promoted (inflate_unknown off)."""
+        lc = LayeredCostmap('map', False, True)  # track unknown space
+        lc.resize_map(10, 10, 1.0, 0.0, 0.0)
+        layer = InflationLayer()
+        layer.initialize(lc, 'inflation', None, self.node)
+        lc.add_plugin(layer)
+        lc.set_footprint(make_footprint_from_radius(1.5))
+
+        master = lc.get_costmap()
+        master.set_cost(5, 5, LETHAL_OBSTACLE)
+        layer.update_costs(master, 0, 0, 10, 10)
+
+        # Unknown neighbour within the inscribed radius is promoted to inscribed.
+        self.assertEqual(master.get_cost(6, 5), INSCRIBED_INFLATED_OBSTACLE)
+        # A far unknown cell is left as NO_INFORMATION.
+        self.assertEqual(master.get_cost(0, 0), NO_INFORMATION)
 
 
 if __name__ == '__main__':

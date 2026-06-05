@@ -13,12 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nav2_costmap_2d_py.plugins.static_layer import StaticLayer
-from nav2_costmap_2d_py.plugins.obstacle_layer import ObstacleLayer
 from nav2_costmap_2d_py.plugins.inflation_layer import InflationLayer
+from nav2_costmap_2d_py.plugins.obstacle_layer import ObstacleLayer
+from nav2_costmap_2d_py.plugins.static_layer import StaticLayer
 
 __all__ = [
-    'StaticLayer',
-    'ObstacleLayer',
     'InflationLayer',
+    'ObstacleLayer',
+    'StaticLayer',
 ]

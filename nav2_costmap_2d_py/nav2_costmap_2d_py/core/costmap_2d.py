@@ -27,6 +27,11 @@ from typing import List, Tuple
 from nav2_costmap_2d_py.core.cost_values import FREE_SPACE
 
 
+def _sign(x: int) -> int:
+    """Return the sign of an int (mirrors nav2_util::sign, with sign(0) == -1)."""
+    return 1 if x > 0 else -1
+
+
 class Costmap2D:
     """A 2D costmap provides a mapping between points in the world and their associated "costs"."""
 
@@ -181,10 +186,46 @@ class Costmap2D:
             The associated map coordinates, guaranteed to lie within the map.
 
         """
+        # Here we avoid doing any math to wx,wy before comparing them to the
+        # bounds, so their values can go out to the max and min values of double
+        # floating point.
+        if wx < self._origin_x:
+            mx = 0
+        elif wx > self._resolution * self._size_x + self._origin_x:
+            mx = self._size_x - 1
+        else:
+            mx = int((wx - self._origin_x) / self._resolution)
+
+        if wy < self._origin_y:
+            my = 0
+        elif wy > self._resolution * self._size_y + self._origin_y:
+            my = self._size_y - 1
+        else:
+            my = int((wy - self._origin_y) / self._resolution)
+
+        return mx, my
+
+    def world_to_map_no_bounds(self, wx: float, wy: float) -> Tuple[int, int]:
+        """
+        Convert from world to map coordinates without checking for legal bounds.
+
+        The returned map coordinates are **not** guaranteed to lie within the map.
+
+        Parameters
+        ----------
+        wx : float
+            The x world coordinate.
+        wy : float
+            The y world coordinate.
+
+        Returns
+        -------
+        (mx, my)
+            The associated (possibly out-of-bounds) map coordinates.
+
+        """
         mx = int((wx - self._origin_x) / self._resolution)
         my = int((wy - self._origin_y) / self._resolution)
-        mx = max(0, min(mx, self._size_x - 1))
-        my = max(0, min(my, self._size_y - 1))
         return mx, my
 
     def map_to_world(self, mx: int, my: int) -> Tuple[float, float]:
@@ -211,6 +252,24 @@ class Costmap2D:
     # ------------------------------------------------------------------
     # Index helpers
     # ------------------------------------------------------------------
+
+    def cell_distance(self, world_dist: float) -> int:
+        """
+        Convert a distance in the world into a distance in cells.
+
+        Parameters
+        ----------
+        world_dist : float
+            The world distance, in metres.
+
+        Returns
+        -------
+        int
+            The equivalent cell distance (``ceil``, never negative).
+
+        """
+        cells_dist = max(0.0, math.ceil(world_dist / self._resolution))
+        return int(cells_dist)
 
     def get_index(self, mx: int, my: int) -> int:
         """
@@ -288,6 +347,151 @@ class Costmap2D:
 
         """
         self._costmap[self.get_index(mx, my)] = cost
+
+    def raytrace_line(
+        self,
+        cost: int,
+        x0: int,
+        y0: int,
+        x1: int,
+        y1: int,
+        max_length: int = 2 ** 32 - 1,
+        min_length: int = 0,
+    ) -> None:
+        """
+        Set ``cost`` on every cell along the line from ``(x0, y0)`` to ``(x1, y1)``.
+
+        The dominant axis is stepped with midpoint-error Bresenham, the endpoint is always written,
+        the traversal starts ``min_length`` cells away from the origin and stops
+        at ``max_length`` cells (scaled by the line length).
+
+        Parameters
+        ----------
+        cost : int
+            The value to write into each traversed cell.
+        x0, y0 : int
+            Start cell (the sensor origin).
+        x1, y1 : int
+            End cell (the obstacle hit / range limit).
+        max_length : int
+            Maximum desired length of the segment, in cells.
+        min_length : int
+            Minimum desired length of the segment, in cells (cells closer than
+            this to the origin are not written).
+
+        """
+        grid = self._costmap
+        size = len(grid)
+        for offset in self._raytrace_offsets(x0, y0, x1, y1, max_length, min_length):
+            if 0 <= offset < size:
+                grid[offset] = cost
+
+    def _raytrace_offsets(
+        self,
+        x0: int, y0: int, x1: int, y1: int,
+        max_length: int = 2 ** 32 - 1,
+        min_length: int = 0,
+    ):
+        """
+        Yield the flat-array offsets of the cells along ``(x0, y0)``..``(x1, y1)``.
+
+        Shared engine behind :meth:`raytrace_line` and :meth:`polygon_outline_cells`.
+
+        Parameters
+        ----------
+        x0, y0 : int
+            Start cell.
+        x1, y1 : int
+            End cell.
+        max_length : int
+            Maximum desired length of the segment, in cells.
+        min_length : int
+            Minimum desired length of the segment, in cells.
+
+        Yields
+        ------
+        int
+            The flat-array offset of each traversed cell.
+
+        """
+        size_x = self._size_x
+
+        dx_full = x1 - x0
+        dy_full = y1 - y0
+
+        # Scale the dominant dimension based on the line length.
+        dist = math.hypot(dx_full, dy_full)
+        if dist < min_length:
+            return
+
+        if dist > 0.0:
+            # Adjust the starting point to start min_length away from the origin.
+            min_x0 = int(x0 + dx_full / dist * min_length)
+            min_y0 = int(y0 + dy_full / dist * min_length)
+        else:
+            # dist can be 0 if [x0, y0] == [x1, y1]; only this cell is processed.
+            min_x0 = x0
+            min_y0 = y0
+        offset = min_y0 * size_x + min_x0
+
+        dx = x1 - min_x0
+        dy = y1 - min_y0
+
+        abs_dx = abs(dx)
+        abs_dy = abs(dy)
+
+        offset_dx = _sign(dx)
+        offset_dy = _sign(dy) * size_x
+
+        scale = 1.0 if dist == 0.0 else min(1.0, max_length / dist)
+        if abs_dx >= abs_dy:
+            # x is dominant
+            yield from self._bresenham_2d_offsets(
+                abs_dx, abs_dy, abs_dx // 2, offset_dx, offset_dy, offset,
+                int(scale * abs_dx))
+        else:
+            # y is dominant
+            yield from self._bresenham_2d_offsets(
+                abs_dy, abs_dx, abs_dy // 2, offset_dy, offset_dx, offset,
+                int(scale * abs_dy))
+
+    def _bresenham_2d_offsets(
+        self,
+        abs_da: int, abs_db: int, error_b: int,
+        offset_a: int, offset_b: int,
+        offset: int, max_length: int,
+    ):
+        """
+        Yield flat-array offsets of a 2D Bresenham traversal.
+
+        Parameters
+        ----------
+        abs_da, abs_db : int
+            Absolute deltas of the dominant and minor axes, in cells.
+        error_b : int
+            Running Bresenham error term for the minor axis.
+        offset_a, offset_b : int
+            Flat-array offsets for a dominant-axis and a minor-axis step.
+        offset : int
+            Flat-array index of the starting cell.
+        max_length : int
+            Maximum number of dominant-axis steps to take.
+
+        Yields
+        ------
+        int
+            The flat-array offset of each traversed cell (endpoint included).
+
+        """
+        end = min(max_length, abs_da)
+        for _ in range(end):
+            yield offset
+            offset += offset_a
+            error_b += abs_db
+            if error_b >= abs_da:
+                offset += offset_b
+                error_b -= abs_da
+        yield offset
 
     def get_char_map(self) -> bytearray:
         """
@@ -404,6 +608,9 @@ class Costmap2D:
         """
         Set the cost of a convex polygon to a desired value.
 
+        If **any** vertex lies outside the map the polygon is rejected and nothing is
+        written (returns False).
+
         Parameters
         ----------
         polygon : list of tuple of float
@@ -418,59 +625,150 @@ class Costmap2D:
             True if the polygon was filled, False if it could not be filled.
 
         """
-        if len(polygon) < 3:
+        ok, polygon_cells = self.get_map_region_occupied_by_polygon(polygon)
+        if not ok:
             return False
-        cells = self._rasterize_polygon(polygon)
-        for mx, my in cells:
-            if 0 <= mx < self._size_x and 0 <= my < self._size_y:
-                self._costmap[self.get_index(mx, my)] = cost
+        for mx, my in polygon_cells:
+            self.set_cost(mx, my, cost)
         return True
 
-    def _rasterize_polygon(
+    def get_map_region_occupied_by_polygon(
         self, polygon: List[Tuple[float, float]]
-    ) -> List[Tuple[int, int]]:
+    ) -> Tuple[bool, List[Tuple[int, int]]]:
         """
-        Get the map cells that fill a convex polygon.
+        Get the map cells occupied by a world-coordinate polygon.
+
+        Every vertex is converted with :meth:`world_to_map`; if any vertex is
+        out of bounds the operation fails.
 
         Parameters
         ----------
         polygon : list of tuple of float
-            The polygon to rasterize, as a list of ``(x, y)`` world-coordinate
-            tuples.
+            The polygon, as a list of ``(x, y)`` world-coordinate tuples.
+
+        Returns
+        -------
+        (ok, cells)
+            ``ok`` is False if any vertex fell outside the map; ``cells`` are the
+            ``(mx, my)`` cells filling the polygon.
+
+        """
+        map_polygon: List[Tuple[int, int]] = []
+        for wx, wy in polygon:
+            ok, mx, my = self.world_to_map(wx, wy)
+            if not ok:
+                # Polygon lies outside map bounds, so we can't fill it.
+                return False, []
+            map_polygon.append((mx, my))
+
+        return True, self.convex_fill_cells(map_polygon)
+
+    def polygon_outline_cells(
+        self,
+        polygon: List[Tuple[int, int]]
+    ) -> List[Tuple[int, int]]:
+        """
+        Get the map cells that make up the outline of a polygon.
+
+        Each edge is raytraced (and the polygon closed from the last vertex to the first).
+
+        Parameters
+        ----------
+        polygon : list of tuple of int
+            The polygon in map coordinates (``(mx, my)`` vertices).
 
         Returns
         -------
         list of tuple of int
-            The map cells (``(mx, my)``) inside (and on the boundary of) the
-            polygon.
+            The cells lying on the outline of the polygon.
 
         """
-        pts = []
-        for wx, wy in polygon:
-            ok, mx, my = self.world_to_map(wx, wy)
-            if ok:
-                pts.append((mx, my))
-        if not pts:
+        cells: List[Tuple[int, int]] = []
+        size_x = self._size_x
+
+        def gather(x0: int, y0: int, x1: int, y1: int) -> None:
+            for offset in self._raytrace_offsets(x0, y0, x1, y1):
+                my = offset // size_x
+                mx = offset - my * size_x
+                if 0 <= mx < self._size_x and 0 <= my < self._size_y:
+                    cells.append((mx, my))
+
+        n = len(polygon)
+        for i in range(n - 1):
+            gather(polygon[i][0], polygon[i][1], polygon[i + 1][0], polygon[i + 1][1])
+        if polygon:
+            # Close the polygon by going from the last point to the first.
+            gather(polygon[-1][0], polygon[-1][1], polygon[0][0], polygon[0][1])
+        return cells
+
+    def convex_fill_cells(
+        self,
+        polygon: List[Tuple[int, int]]
+    ) -> List[Tuple[int, int]]:
+        """
+        Get the map cells that fill a convex polygon.
+
+        Gather the outline cells, sort them by x, then fill each column between its extreme
+        y values.
+
+        Parameters
+        ----------
+        polygon : list of tuple of int
+            The polygon in map coordinates (``(mx, my)`` vertices).
+
+        Returns
+        -------
+        list of tuple of int
+            The cells that fill the polygon (outline included).
+
+        """
+        # we need a minimum polygon of a triangle
+        if len(polygon) < 3:
             return []
 
-        min_y = min(p[1] for p in pts)
-        max_y = max(p[1] for p in pts)
-        cells = []
-        n = len(pts)
-        for y in range(min_y, max_y + 1):
-            xs = []
-            for i in range(n):
-                x1, y1 = pts[i]
-                x2, y2 = pts[(i + 1) % n]
-                if (y1 <= y < y2) or (y2 <= y < y1):
-                    if y2 != y1:
-                        xi = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
-                        xs.append(int(xi))
-            xs.sort()
-            for k in range(0, len(xs) - 1, 2):
-                for x in range(xs[k], xs[k + 1] + 1):
-                    cells.append((x, y))
-        return cells
+        # first get the cells that make up the outline of the polygon
+        polygon_cells = self.polygon_outline_cells(polygon)
+
+        # quick bubble sort to sort points by x
+        i = 0
+        while i < len(polygon_cells) - 1:
+            if polygon_cells[i][0] > polygon_cells[i + 1][0]:
+                polygon_cells[i], polygon_cells[i + 1] = \
+                    polygon_cells[i + 1], polygon_cells[i]
+                if i > 0:
+                    i -= 1
+            else:
+                i += 1
+
+        i = 0
+        min_x = polygon_cells[0][0]
+        max_x = polygon_cells[-1][0]
+
+        # walk through each column and mark cells inside the polygon
+        for x in range(min_x, max_x + 1):
+            if i >= len(polygon_cells) - 1:
+                break
+
+            if polygon_cells[i][1] < polygon_cells[i + 1][1]:
+                min_pt = polygon_cells[i]
+                max_pt = polygon_cells[i + 1]
+            else:
+                min_pt = polygon_cells[i + 1]
+                max_pt = polygon_cells[i]
+
+            i += 2
+            while i < len(polygon_cells) and polygon_cells[i][0] == x:
+                if polygon_cells[i][1] < min_pt[1]:
+                    min_pt = polygon_cells[i]
+                elif polygon_cells[i][1] > max_pt[1]:
+                    max_pt = polygon_cells[i]
+                i += 1
+
+            # loop through cells in the column
+            for y in range(min_pt[1], max_pt[1] + 1):
+                polygon_cells.append((x, y))
+
+        return polygon_cells
 
     def footprint_cost(
         self, x: float, y: float, theta: float,

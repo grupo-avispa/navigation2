@@ -23,7 +23,12 @@ master grid.
 
 import unittest
 
-from nav2_costmap_2d_py.core.cost_values import FREE_SPACE, LETHAL_OBSTACLE, NO_INFORMATION
+from nav2_costmap_2d_py.core.cost_values import (
+    FREE_SPACE,
+    INSCRIBED_INFLATED_OBSTACLE,
+    LETHAL_OBSTACLE,
+    NO_INFORMATION,
+)
 from nav2_costmap_2d_py.core.layered_costmap import LayeredCostmap
 from nav2_costmap_2d_py.plugins.static_layer import StaticLayer
 
@@ -78,22 +83,29 @@ class TestStaticLayer(unittest.TestCase):
         self.layer._track_unknown_space = True
         self.layer._trinary_costmap = True
         self.layer._lethal_threshold = 100
-        self.assertEqual(self.layer._interpret_value(-1), NO_INFORMATION)
-        self.assertEqual(self.layer._interpret_value(0), FREE_SPACE)
-        self.assertEqual(self.layer._interpret_value(50), FREE_SPACE)
-        self.assertEqual(self.layer._interpret_value(100), LETHAL_OBSTACLE)
+        self.assertEqual(self.layer.interpret_value(-1), NO_INFORMATION)
+        self.assertEqual(self.layer.interpret_value(0), FREE_SPACE)
+        self.assertEqual(self.layer.interpret_value(50), FREE_SPACE)
+        self.assertEqual(self.layer.interpret_value(100), LETHAL_OBSTACLE)
 
     def test_interpret_value_analogue(self) -> None:
         """Non-trinary interpretation scales the occupancy to a cost."""
         self.layer._track_unknown_space = True
         self.layer._trinary_costmap = False
         self.layer._lethal_threshold = 100
-        self.assertEqual(self.layer._interpret_value(50), int(0.5 * LETHAL_OBSTACLE))
+        self.assertEqual(self.layer.interpret_value(50), int(0.5 * LETHAL_OBSTACLE))
 
     def test_interpret_value_unknown_as_free(self) -> None:
         """With unknown tracking off, -1 maps to free space."""
         self.layer._track_unknown_space = False
-        self.assertEqual(self.layer._interpret_value(-1), FREE_SPACE)
+        self.assertEqual(self.layer.interpret_value(-1), FREE_SPACE)
+
+    def test_interpret_value_inscribed(self) -> None:
+        """A cell equal to inscribed_obstacle_cost_value maps to the inscribed cost."""
+        self.layer._track_unknown_space = True
+        self.layer._inscribed_obstacle_cost_value = 253
+        self.assertEqual(
+            self.layer.interpret_value(253), INSCRIBED_INFLATED_OBSTACLE)
 
     def test_map_callback_writes_master(self) -> None:
         """A received map is interpreted and written into the master grid."""

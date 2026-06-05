@@ -16,25 +16,32 @@
 """
 Unit tests for the SpeedFilter.
 
-Inspired by nav2_costmap_2d/test/unit/speed_filter_test.cpp: a speed-limit
-mask maps the robot pose to a speed restriction.
+Inspired by nav2_costmap_2d/test/unit/speed_filter_test.cpp: a speed-limit mask
+maps the robot pose to a speed restriction using ``speed = base + data * mult``.
 """
 
 import unittest
 
-from geometry_msgs.msg import PoseStamped
 from nav2_costmap_2d_py.core.layered_costmap import LayeredCostmap
+from nav2_costmap_2d_py.filters.costmap_filter import (
+    NO_SPEED_LIMIT,
+    SPEED_FILTER_PERCENT,
+)
 from nav2_costmap_2d_py.filters.speed_filter import SpeedFilter
+from nav2_msgs.msg import CostmapFilterInfo
 
 from nav_msgs.msg import OccupancyGrid
 
 import rclpy
 from rclpy.node import Node
 
+_INF = float('inf')
 
-def make_mask(width, height, resolution, data, origin=(0.0, 0.0)):
+
+def make_mask(width, height, resolution, data, origin=(0.0, 0.0), frame='map'):
     """Build an OccupancyGrid speed mask from flat data."""
     msg = OccupancyGrid()
+    msg.header.frame_id = frame
     msg.info.width = width
     msg.info.height = height
     msg.info.resolution = resolution
@@ -43,6 +50,11 @@ def make_mask(width, height, resolution, data, origin=(0.0, 0.0)):
     msg.info.origin.orientation.w = 1.0
     msg.data = list(data)
     return msg
+
+
+def _bounds():
+    """Return fresh (min_x, min_y, max_x, max_y) single-element bound lists."""
+    return [_INF], [_INF], [-_INF], [-_INF]
 
 
 class TestSpeedFilter(unittest.TestCase):
@@ -77,51 +89,63 @@ class TestSpeedFilter(unittest.TestCase):
         """Destroy the test node."""
         self.node.destroy_node()
 
+    def _process_at(self, rx, ry):
+        """Buffer a robot pose and run the filter."""
+        min_x, min_y, max_x, max_y = _bounds()
+        self.filter.update_bounds(rx, ry, 0.0, min_x, min_y, max_x, max_y)
+        self.filter.update_costs(self.lc.get_costmap(), 0, 0, 10, 10)
+
     def test_is_current_always_true(self) -> None:
         """The speed filter is always considered current."""
         self.assertTrue(self.filter.is_current())
 
+    def test_filter_info_sets_mode(self) -> None:
+        """The filter info callback sets the mode and base/multiplier."""
+        info = CostmapFilterInfo()
+        info.type = SPEED_FILTER_PERCENT
+        info.filter_mask_topic = 'speed_mask'
+        info.base = 0.0
+        info.multiplier = 1.0
+        self.filter._filter_info_callback(info)
+        self.assertTrue(self.filter._percentage)
+        self.assertIsNotNone(self.filter._mask_sub)
+
     def test_speed_percentage(self) -> None:
-        """In percentage mode the mask value is the speed limit percentage."""
+        """In percentage mode speed = base + data * multiplier (data as percent)."""
         self.filter._percentage = True
-        speed = self.filter._get_speed_at(3.5, 3.5)
-        self.assertIsNotNone(speed)
-        assert speed is not None
-        self.assertAlmostEqual(speed, 60.0)
-
-    def test_full_speed_zone(self) -> None:
-        """A zero mask value restores full speed (0.0)."""
-        speed = self.filter._get_speed_at(0.5, 0.5)
-        self.assertIsNotNone(speed)
-        assert speed is not None
-        self.assertAlmostEqual(speed, 0.0)
-
-    def test_outside_mask(self) -> None:
-        """Outside the mask the lookup returns None."""
-        self.assertIsNone(self.filter._get_speed_at(-5.0, -5.0))
+        self.filter._base = 0.0
+        self.filter._multiplier = 1.0
+        self._process_at(3.5, 3.5)
+        self.assertAlmostEqual(self.filter._speed_limit, 60.0)
 
     def test_speed_absolute(self) -> None:
-        """In absolute mode the limit scales the base speed."""
+        """In absolute mode the limit is the linear base + data * multiplier."""
         self.filter._percentage = False
-        self.filter._base_speed = 0.5
-        speed = self.filter._get_speed_at(3.5, 3.5)
-        self.assertIsNotNone(speed)
-        assert speed is not None
-        self.assertAlmostEqual(speed, 0.5 * (1.0 - 60.0 / 100.0))
+        self.filter._base = 0.0
+        self.filter._multiplier = 0.01
+        self._process_at(3.5, 3.5)
+        self.assertAlmostEqual(self.filter._speed_limit, 0.6)
 
-    def test_update_costs_publishes_on_change(self) -> None:
-        """update_costs publishes a speed limit derived from the robot pose."""
-        pose = PoseStamped()
-        pose.pose.position.x = 3.5
-        pose.pose.position.y = 3.5
-        # Provide the robot pose hook the filter looks up on the node.
-        self.node.get_robot_pose = lambda: pose  # type: ignore[attr-defined]
+    def test_full_speed_zone(self) -> None:
+        """A zero mask cell yields the no-limit value."""
         self.filter._percentage = True
+        self._process_at(0.5, 0.5)
+        self.assertAlmostEqual(self.filter._speed_limit, NO_SPEED_LIMIT)
 
-        self.filter.update_costs(self.lc.get_costmap(), 0, 0, 10, 10)
-        self.assertIsNotNone(self.filter._last_speed_limit)
-        assert self.filter._last_speed_limit is not None
-        self.assertAlmostEqual(self.filter._last_speed_limit, 60.0)
+    def test_unknown_cell_does_nothing(self) -> None:
+        """An unknown mask cell leaves the previous limit untouched (no publish)."""
+        data = [-1] * 100
+        self.filter._mask_callback(make_mask(10, 10, 1.0, data))
+        self.filter._speed_limit_prev = 42.0
+        self._process_at(3.5, 3.5)
+        # Unknown cell: process returns early without updating prev.
+        self.assertEqual(self.filter._speed_limit_prev, 42.0)
+
+    def test_outside_mask_no_change(self) -> None:
+        """Outside the mask nothing is published."""
+        self.filter._speed_limit_prev = 7.0
+        self._process_at(-5.0, -5.0)
+        self.assertEqual(self.filter._speed_limit_prev, 7.0)
 
 
 if __name__ == '__main__':

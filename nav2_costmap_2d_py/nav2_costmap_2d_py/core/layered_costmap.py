@@ -192,6 +192,10 @@ class LayeredCostmap:
         """
         with self._combined_costmap.get_mutex():
             # ----- Rolling window origin shift -----
+            # Only the combined costmap's
+            # origin is rolled here. Each layer rolls its OWN costmap inside its
+            # update_bounds (match_size is NOT called every cycle, which would
+            # wipe the accumulated obstacle data).
             if self._rolling_window:
                 new_origin_x = (
                     robot_x
@@ -202,10 +206,6 @@ class LayeredCostmap:
                     - self._combined_costmap.size_y_meters / 2.0
                 )
                 self._combined_costmap.update_origin(new_origin_x, new_origin_y)
-                for plugin in self._plugins:
-                    plugin.match_size()
-                for f in self._filters:
-                    f.match_size()
 
             # ----- Initialise bounding box to "nothing" -----
             _INF = float('inf')
@@ -469,11 +469,24 @@ def make_footprint_from_string(footprint_str: str) -> List[Tuple[float, float]]:
         return []
 
 
+def _sign0(x: float) -> int:
+    """Return -1, 0 or +1 with sign0(0) == 0."""
+    if x < 0:
+        return -1
+    if x > 0:
+        return 1
+    return 0
+
+
 def pad_footprint(
     footprint: List[Tuple[float, float]], padding: float
 ) -> List[Tuple[float, float]]:
     """
-    Expand a footprint outward by *padding* metres.
+    Pad a footprint outward by *padding* metres along each axis.
+
+    Each coordinate is pushed
+    out by ``padding`` in the direction of its sign (axis-aligned), so a corner
+    ``(x, y)`` becomes ``(x + sign0(x) * padding, y + sign0(y) * padding)``.
 
     Parameters
     ----------
@@ -488,21 +501,10 @@ def pad_footprint(
         The padded footprint.
 
     """
-    if not footprint or padding <= 0:
-        return list(footprint)
-    cx = sum(p[0] for p in footprint) / len(footprint)
-    cy = sum(p[1] for p in footprint) / len(footprint)
-    result = []
-    for px, py in footprint:
-        dx = px - cx
-        dy = py - cy
-        length = math.sqrt(dx * dx + dy * dy)
-        if length > 0:
-            result.append((px + padding * dx / length,
-                           py + padding * dy / length))
-        else:
-            result.append((px, py))
-    return result
+    return [
+        (px + _sign0(px) * padding, py + _sign0(py) * padding)
+        for px, py in footprint
+    ]
 
 
 def transform_footprint(

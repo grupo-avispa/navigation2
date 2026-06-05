@@ -100,6 +100,24 @@ class TestCostmap2DPublisher(unittest.TestCase):
         """Publishing while inactive does nothing and does not raise."""
         self.pub.publish_costmap()  # inactive: should be a silent no-op
 
+    def test_update_bounds_accumulates_dirty_window(self) -> None:
+        """update_bounds widens the dirty window and publish resets it."""
+        self.pub.update_bounds(1, 3, 0, 2)
+        self.pub.update_bounds(0, 2, 1, 3)
+        self.assertEqual((self.pub._x0, self.pub._xn), (0, 3))
+        self.assertEqual((self.pub._y0, self.pub._yn), (0, 3))
+        # After an (active) publish the window is reset to "empty".
+        self.pub.on_activate()
+        # Force the incremental path: pretend a full publish already happened.
+        self.pub._saved_origin_x = self.costmap.origin_x
+        self.pub._saved_origin_y = self.costmap.origin_y
+        self.pub._saved_size_x = self.costmap.size_x
+        self.pub._saved_size_y = self.costmap.size_y
+        self.pub.update_bounds(0, 2, 0, 2)
+        self.pub.publish_costmap()
+        self.assertEqual((self.pub._xn, self.pub._yn), (0, 0))
+        self.assertEqual(self.pub._x0, self.costmap.size_x)
+
 
 if __name__ == '__main__':
     unittest.main()

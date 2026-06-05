@@ -39,6 +39,7 @@ class _MarkingLayer(Layer):
 
     def __init__(self, mark_cell=(5, 5)):
         super().__init__()
+        self._enabled = True
         self._mark_cell = mark_cell
 
     def update_bounds(self, robot_x, robot_y, robot_yaw, min_x, min_y, max_x, max_y):

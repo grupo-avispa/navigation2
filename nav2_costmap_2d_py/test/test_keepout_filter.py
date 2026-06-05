@@ -16,8 +16,9 @@
 """
 Unit tests for the KeepoutFilter.
 
-Inspired by nav2_costmap_2d/test/unit/keepout_filter_test.cpp: a keepout mask
-marks lethal regions onto the master costmap with update_with_max.
+Inspired by nav2_costmap_2d/test/unit/keepout_filter_test.cpp: a keepout mask is
+read per-cell (occupancy linearly mapped to cost) and merged onto the master
+costmap with a max combination.
 """
 
 import unittest
@@ -25,6 +26,7 @@ import unittest
 from nav2_costmap_2d_py.core.cost_values import FREE_SPACE, LETHAL_OBSTACLE
 from nav2_costmap_2d_py.core.layered_costmap import LayeredCostmap
 from nav2_costmap_2d_py.filters.keepout_filter import KeepoutFilter
+from nav2_msgs.msg import CostmapFilterInfo
 
 from nav_msgs.msg import OccupancyGrid
 
@@ -32,9 +34,10 @@ import rclpy
 from rclpy.node import Node
 
 
-def make_mask(width, height, resolution, data, origin=(0.0, 0.0)):
+def make_mask(width, height, resolution, data, origin=(0.0, 0.0), frame='map'):
     """Build an OccupancyGrid keepout mask from flat data."""
     msg = OccupancyGrid()
+    msg.header.frame_id = frame
     msg.info.width = width
     msg.info.height = height
     msg.info.resolution = resolution
@@ -74,11 +77,10 @@ class TestKeepoutFilter(unittest.TestCase):
         self.node.destroy_node()
 
     def test_mask_marks_keepout(self) -> None:
-        """A lethal mask cell becomes a lethal cell in the master grid."""
+        """A fully-occupied mask cell becomes a lethal cell in the master grid."""
         data = [0] * 100
         data[3 * 10 + 3] = 100   # keepout at cell (3, 3)
-        msg = make_mask(10, 10, 1.0, data)
-        self.filter._mask_callback(msg)
+        self.filter._mask_callback(make_mask(10, 10, 1.0, data))
 
         master = self.lc.get_costmap()
         self.filter.update_costs(master, 0, 0, 10, 10)
@@ -86,15 +88,25 @@ class TestKeepoutFilter(unittest.TestCase):
         self.assertEqual(master.get_cost(3, 3), LETHAL_OBSTACLE)
         self.assertEqual(master.get_cost(0, 0), FREE_SPACE)
 
-    def test_mask_below_threshold_is_free(self) -> None:
-        """Mask values below the keepout threshold do not block cells."""
-        data = [50] * 100   # below the keepout threshold (99)
-        msg = make_mask(10, 10, 1.0, data)
-        self.filter._mask_callback(msg)
+    def test_mask_intermediate_value_scaled(self) -> None:
+        """An intermediate mask value is linearly scaled to a cost (not binarized)."""
+        data = [50] * 100   # 50% occupancy -> round(50 * 254 / 100) = 127
+        self.filter._mask_callback(make_mask(10, 10, 1.0, data))
 
         master = self.lc.get_costmap()
         self.filter.update_costs(master, 0, 0, 10, 10)
-        self.assertEqual(master.get_cost(5, 5), FREE_SPACE)
+        self.assertEqual(master.get_cost(5, 5), 127)
+
+    def test_filter_info_subscribes_to_mask(self) -> None:
+        """The filter info callback subscribes to the announced mask topic."""
+        info = CostmapFilterInfo()
+        info.type = 0  # keepout
+        info.filter_mask_topic = 'my_keepout_mask'
+        info.base = 0.0
+        info.multiplier = 1.0
+        self.filter._filter_info_callback(info)
+        self.assertIsNotNone(self.filter._mask_sub)
+        self.assertTrue(self.filter._mask_topic.endswith('my_keepout_mask'))
 
     def test_not_clearable(self) -> None:
         """The keepout filter is never cleared."""

@@ -16,9 +16,9 @@
 """
 SpeedFilter for nav2_costmap_2d_py.
 
-Costmap filter that reads a speed-limit mask and publishes
-``nav2_msgs/msg/SpeedLimit`` messages when the robot enters / leaves
-a speed-limited zone.
+Costmap filter that reads a speed-limit mask (discovered through a
+``CostmapFilterInfo`` message) and publishes ``nav2_msgs/msg/SpeedLimit``
+messages when the robot enters / leaves a speed-limited zone.
 
 It mirrors the nav2_costmap_2d::SpeedFilter from the C++ implementation.
 
@@ -26,207 +26,187 @@ Plugin type string:
     ``"nav2_costmap_2d_py/SpeedFilter"``
 """
 
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
-from nav2_costmap_2d_py.core.layer import Layer
-from nav2_msgs.msg import SpeedLimit
+from nav2_costmap_2d_py.filters.costmap_filter import (
+    CostmapFilter,
+    NO_SPEED_LIMIT,
+    SPEED_FILTER_ABSOLUTE,
+    SPEED_FILTER_PERCENT,
+    SPEED_MASK_NO_LIMIT,
+    SPEED_MASK_UNKNOWN,
+)
+from nav2_msgs.msg import CostmapFilterInfo, SpeedLimit
 from nav_msgs.msg import OccupancyGrid
-
-# OccupancyGrid value that means "full speed"
-_FULL_SPEED_ZONE = 0
+from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 
 
-class SpeedFilter(Layer):
+def _latched_qos(depth: int = 1) -> QoSProfile:
+    """
+    Build a latched (transient-local, reliable) QoS profile.
+
+    Parameters
+    ----------
+    depth : int
+        The depth of the QoS history (default: 1).
+
+    """
+    return QoSProfile(
+        depth=depth,
+        history=QoSHistoryPolicy.KEEP_LAST,
+        reliability=QoSReliabilityPolicy.RELIABLE,
+        durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+    )
+
+
+class SpeedFilter(CostmapFilter):
     """
     Read in a speed restriction mask to dynamically adjust the robot's speed.
 
-    Enables the robot to slow down in dangerous areas based on its pose in the
-    map, publishing ``nav2_msgs/msg/SpeedLimit`` messages when the robot enters
-    or leaves a speed-limited zone.
+    Publishes ``nav2_msgs/msg/SpeedLimit`` messages when the robot enters or
+    leaves a speed-limited zone, based on its pose in the mask.
     """
 
     def __init__(self) -> None:
         """Initialize speed filter defaults."""
         super().__init__()
         self._speed_limit_topic = 'speed_limit'
-        self._mask_topic = 'speed_filter_mask'
-        self._percentage = True
-        self._base_speed = 0.5
-
-        self._mask: Optional[list] = None   # flat list of speed values (0-100 or -1)
-        self._mask_width: int = 0
-        self._mask_height: int = 0
-        self._mask_resolution: float = 0.0
-        self._mask_origin_x: float = 0.0
-        self._mask_origin_y: float = 0.0
-
-        self._mask_sub: Any = None
-        # Any (not Optional): assigned a real publisher in on_initialize before
-        # use; avoids a spurious mypy union-attr on .publish().
+        self._filter_mask: Optional[OccupancyGrid] = None
+        self._percentage = False
+        self._base = 0.0
+        self._multiplier = 1.0
+        self._speed_limit = NO_SPEED_LIMIT
+        self._speed_limit_prev = NO_SPEED_LIMIT
         self._speed_limit_pub: Any = None
-        self._last_speed_limit: Optional[float] = None
 
-    def on_initialize(self) -> None:
-        """Initialize the filter: read params, subscribe to the mask and create the publisher."""
-        node = self._node
-
-        self._enabled = self._declare_parameter_if_not_declared('enabled', True)
-        self._speed_limit_topic = self._declare_parameter_if_not_declared(
-            'speed_limit_topic', 'speed_limit')
-        self._mask_topic = self._declare_parameter_if_not_declared(
-            'mask_topic', 'speed_filter_mask')
-        self._percentage = self._declare_parameter_if_not_declared('percentage', True)
-        self._base_speed = self._declare_parameter_if_not_declared('base_speed', 0.5)
-
-        self._mask_sub = node.create_subscription(
-            OccupancyGrid,
-            self._mask_topic,
-            self._mask_callback,
-            1,
-        )
-
-        self._speed_limit_pub = node.create_publisher(
-            SpeedLimit,
-            self._speed_limit_topic,
-            1,
-        )
-
-        node.get_logger().info(
-            f'[SpeedFilter] "{self._name}" subscribing to mask "{self._mask_topic}", '
-            f'publishing to "{self._speed_limit_topic}"'
-        )
-
-    def update_bounds(
-        self,
-        robot_x: float,
-        robot_y: float,
-        robot_yaw: float,
-        min_x: List[float],
-        min_y: List[float],
-        max_x: List[float],
-        max_y: List[float],
-    ) -> None:
+    def initialize_filter(self, filter_info_topic: str) -> None:
         """
-        Update the master costmap bounds (no-op: the speed filter does not change bounds).
+        Subscribe to the filter info topic and create the speed limit publisher.
 
         Parameters
         ----------
-        robot_x, robot_y, robot_yaw : float
-            Current robot pose in the global frame.
-        min_x, min_y, max_x, max_y : list of float
-            Single-element lists holding the update window bounds (left
-            unchanged by this filter).
+        filter_info_topic : str
+            The topic to subscribe for ``CostmapFilterInfo`` messages.
 
         """
-        # SpeedFilter does not modify the costmap bounds
-        pass
+        node = self._node
+        self._filter_info_topic = self.join_with_parent_namespace(filter_info_topic)
+        self._speed_limit_topic = self._declare_parameter_if_not_declared(
+            'speed_limit_topic', 'speed_limit')
 
-    def update_costs(
+        self._filter_info_sub = node.create_subscription(
+            CostmapFilterInfo, self._filter_info_topic,
+            self._filter_info_callback, _latched_qos())
+        self._speed_limit_pub = node.create_publisher(
+            SpeedLimit, self._speed_limit_topic, _latched_qos())
+        node.get_logger().info(
+            f'[SpeedFilter] "{self._name}" subscribing to filter info '
+            f'"{self._filter_info_topic}", publishing to "{self._speed_limit_topic}"')
+
+    def _filter_info_callback(self, msg: CostmapFilterInfo) -> None:
+        """
+        Read base/multiplier/type and subscribe to the announced mask topic.
+
+        Parameters
+        ----------
+        msg : CostmapFilterInfo
+            The filter info message.
+
+        """
+        self._base = msg.base
+        self._multiplier = msg.multiplier
+        if msg.type == SPEED_FILTER_PERCENT:
+            self._percentage = True
+        elif msg.type == SPEED_FILTER_ABSOLUTE:
+            self._percentage = False
+        else:
+            self._node.get_logger().error('SpeedFilter: mode is not supported')
+            return
+
+        self._mask_topic = self.join_with_parent_namespace(msg.filter_mask_topic)
+        self._mask_sub = self._node.create_subscription(
+            OccupancyGrid, self._mask_topic, self._mask_callback, _latched_qos(3))
+        self._node.get_logger().info(
+            f'[SpeedFilter] "{self._name}" subscribing to mask "{self._mask_topic}" '
+            f'(speed_limit = {self._base} + mask_data * {self._multiplier})')
+
+    def _mask_callback(self, msg: OccupancyGrid) -> None:
+        """
+        Store the received filter mask.
+
+        Parameters
+        ----------
+        msg : OccupancyGrid
+            The filter mask message.
+
+        """
+        self._filter_mask = msg
+
+    def process(
         self,
         master_grid: Costmap2D,
-        min_i: int,
-        min_j: int,
-        max_i: int,
-        max_j: int,
+        min_i: int, min_j: int, max_i: int, max_j: int,
+        pose: Any,
     ) -> None:
         """
-        Process the speed filter at the robot's pose, publishing a speed limit on change.
+        Look up the speed limit at the robot pose and publish it on change.
 
         Parameters
         ----------
         master_grid : Costmap2D
-            The master costmap (not modified by this filter).
-        min_i, min_j : int
-            Lower x/y boundary of the window, in cells.
-        max_i, max_j : int
-            Upper x/y boundary of the window, in cells.
+            The master costmap.
+        min_i, min_j, max_i, max_j : int
+            The bounds of the region to process.
+        pose : Any
+            The robot's pose.
 
         """
-        if not self._enabled or self._mask is None:
+        if self._filter_mask is None:
+            self._node.get_logger().warning(
+                '[SpeedFilter] Filter mask was not received',
+                throttle_duration_sec=2.0)
             return
 
-        # Get the robot pose from the LayeredCostmap → Costmap2DROS chain.
-        # We use the master costmap origin + size to estimate robot position
-        # as the centre of the map (fallback: we can't get robot pose here
-        # without the node reference, so we use master costmap's origin).
-        # Plugins that need robot pose should use self._node directly.
-        try:
-            robot_pose = self._node.get_robot_pose()  # type: ignore[union-attr]
-        except AttributeError:
+        mask = self._filter_mask
+        ok, msk_wx, msk_wy = self.transform_pose(
+            self._global_frame, pose.position.x, pose.position.y,
+            mask.header.frame_id)
+        if not ok:
             return
 
-        if robot_pose is None:
+        in_mask, mx, my = self.mask_world_to_map(mask, msk_wx, msk_wy)
+        if not in_mask:
             return
 
-        rx = robot_pose.pose.position.x
-        ry = robot_pose.pose.position.y
-
-        # Look up the mask value at (rx, ry)
-        speed_limit = self._get_speed_at(rx, ry)
-        if speed_limit is None:
+        speed_mask_data = self.get_mask_data(mask, mx, my)
+        if speed_mask_data == SPEED_MASK_NO_LIMIT:
+            # Free cell: no speed limit.
+            self._speed_limit = NO_SPEED_LIMIT
+        elif speed_mask_data == SPEED_MASK_UNKNOWN:
+            # Unknown cell: invalid for this filter, do nothing.
+            self._node.get_logger().error(
+                f'[SpeedFilter] Found unknown cell in filter_mask[{mx}, {my}], '
+                'which is invalid for this kind of filter')
             return
-
-        # Publish only if changed
-        if speed_limit != self._last_speed_limit:
-            self._publish_speed_limit(speed_limit)
-            self._last_speed_limit = speed_limit
-
-        self._current = True
-
-    def reset(self) -> None:
-        """Reset the costmap filter, clearing the last published speed limit."""
-        self._last_speed_limit = None
-        self._current = False
-
-    def is_current(self) -> bool:
-        """
-        Check whether the data is up to date.
-
-        Returns
-        -------
-        bool
-            Always ``True``; the speed filter is always considered current.
-
-        """
-        return True  # SpeedFilter is always considered current
-
-    def _get_speed_at(self, wx: float, wy: float) -> Optional[float]:
-        """
-        Return the speed limit (fraction or absolute) at world position (wx, wy).
-
-        Parameters
-        ----------
-        wx, wy : float
-            World coordinates to query in the speed mask.
-
-        Returns
-        -------
-        float or None
-            The speed limit value, ``0.0`` when in a full-speed zone, or
-            ``None`` if ``(wx, wy)`` is outside the mask.
-
-        """
-        if self._mask is None:
-            return None
-
-        mx = int((wx - self._mask_origin_x) / self._mask_resolution)
-        my = int((wy - self._mask_origin_y) / self._mask_resolution)
-
-        if not (0 <= mx < self._mask_width and 0 <= my < self._mask_height):
-            return None
-
-        val = self._mask[my * self._mask_width + mx]
-
-        if val == -1 or val == _FULL_SPEED_ZONE:
-            # Outside speed zone: restore full speed
-            return 0.0
-
-        # OccupancyGrid value 1-100 → speed limit
-        if self._percentage:
-            return float(val)          # percentage of max speed
         else:
-            return self._base_speed * (1.0 - val / 100.0)
+            # Normal case: speed_mask_data in [1..100].
+            self._speed_limit = speed_mask_data * self._multiplier + self._base
+            if self._percentage:
+                if self._speed_limit < 0.0 or self._speed_limit > 100.0:
+                    self._node.get_logger().warning(
+                        f'[SpeedFilter] Speed limit {self._speed_limit}% out of '
+                        '[0, 100]; setting it to no-limit.')
+                    self._speed_limit = NO_SPEED_LIMIT
+            elif self._speed_limit < 0.0:
+                self._node.get_logger().warning(
+                    f'[SpeedFilter] Speed limit {self._speed_limit} m/s < 0; '
+                    'setting it to no-limit.')
+                self._speed_limit = NO_SPEED_LIMIT
+
+        if self._speed_limit != self._speed_limit_prev:
+            self._publish_speed_limit(self._speed_limit)
+            self._speed_limit_prev = self._speed_limit
 
     def _publish_speed_limit(self, speed_limit: float) -> None:
         """
@@ -240,31 +220,26 @@ class SpeedFilter(Layer):
 
         """
         msg = SpeedLimit()
+        msg.header.frame_id = self._global_frame
         msg.header.stamp = self._node.get_clock().now().to_msg()
-        msg.header.frame_id = self._layered_costmap.get_global_frame_id()
         msg.percentage = self._percentage
-        msg.speed_limit = speed_limit
+        msg.speed_limit = float(speed_limit)
         self._speed_limit_pub.publish(msg)
 
-    def _mask_callback(self, msg: OccupancyGrid) -> None:
-        """
-        Handle the filter mask: store the incoming speed-restriction OccupancyGrid.
+    def reset(self) -> None:
+        """Reset the last published speed limit."""
+        self._speed_limit_prev = NO_SPEED_LIMIT
+        self.set_current(False)
 
-        Parameters
-        ----------
-        msg : OccupancyGrid
-            The incoming speed-restriction mask.
+    def reset_filter(self) -> None:
+        """Drop the filter info and mask subscriptions."""
+        self._filter_info_sub = None
+        self._mask_sub = None
 
-        """
-        self._mask_width = msg.info.width
-        self._mask_height = msg.info.height
-        self._mask_resolution = msg.info.resolution
-        self._mask_origin_x = msg.info.origin.position.x
-        self._mask_origin_y = msg.info.origin.position.y
-        self._mask = list(msg.data)
+    def is_active(self) -> bool:
+        """Return whether the mask has been received."""
+        return self._filter_mask is not None
 
-        self._node.get_logger().debug(
-            f'[SpeedFilter] "{self._name}" received mask '
-            f'{self._mask_width}×{self._mask_height} @ '
-            f'{self._mask_resolution:.4f} m/px'
-        )
+    def is_current(self) -> bool:
+        """Return True: the speed filter is always considered current."""
+        return True

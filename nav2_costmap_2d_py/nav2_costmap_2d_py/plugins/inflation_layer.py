@@ -25,9 +25,11 @@ Plugin type string:
     ``"nav2_costmap_2d_py/InflationLayer"``
 """
 
+import math
 from typing import List
 
 from nav2_costmap_2d_py.core.cost_values import (
+    FREE_SPACE,
     INSCRIBED_INFLATED_OBSTACLE,
     LETHAL_OBSTACLE,
     NO_INFORMATION,
@@ -55,7 +57,18 @@ class InflationLayer(Layer):
         self._inflate_unknown = False
         self._inflate_around_unknown = False
 
+        self._resolution = 0.0
+        self._inscribed_radius = 0.0
+        self._cell_inflation_radius = 0
+
         self._need_reinflation = True
+
+        # Bounds touched on the previous cycle, so the next cycle can reset and
+        # re-inflate the area that is no longer covered by an obstacle.
+        self._last_min_x = -float('inf')
+        self._last_min_y = -float('inf')
+        self._last_max_x = float('inf')
+        self._last_max_y = float('inf')
 
     # ------------------------------------------------------------------
     # Layer interface
@@ -110,15 +123,36 @@ class InflationLayer(Layer):
         if not self._enabled:
             return
         if self._need_reinflation:
-            # Inflate whole map
-            master = self._layered_costmap.get_costmap()
-            ox = master.origin_x
-            oy = master.origin_y
-            min_x[0] = min(min_x[0], ox)
-            min_y[0] = min(min_y[0], oy)
-            max_x[0] = max(max_x[0], ox + master.size_x_meters)
-            max_y[0] = max(max_y[0], oy + master.size_y_meters)
+            # Reset last_* to "no expansion" values so the next cycle won't merge
+            # with these full-map bounds (avoids a double full-map update after a
+            # reset).
+            self._last_min_x = float('inf')
+            self._last_min_y = float('inf')
+            self._last_max_x = -float('inf')
+            self._last_max_y = -float('inf')
+            min_x[0] = -float('inf')
+            min_y[0] = -float('inf')
+            max_x[0] = float('inf')
+            max_y[0] = float('inf')
             self._need_reinflation = False
+        else:
+            # Expand the update window by the inflation radius around both the
+            # current and the previous obstacle-update region, so reset_map
+            # clears the stale inflation before it is recomputed. Without this
+            # the old inflation lingers and smears (especially with a rolling
+            # window).
+            tmp_min_x = self._last_min_x
+            tmp_min_y = self._last_min_y
+            tmp_max_x = self._last_max_x
+            tmp_max_y = self._last_max_y
+            self._last_min_x = min_x[0]
+            self._last_min_y = min_y[0]
+            self._last_max_x = max_x[0]
+            self._last_max_y = max_y[0]
+            min_x[0] = min(tmp_min_x, min_x[0]) - self._inflation_radius
+            min_y[0] = min(tmp_min_y, min_y[0]) - self._inflation_radius
+            max_x[0] = max(tmp_max_x, max_x[0]) + self._inflation_radius
+            max_y[0] = max(tmp_max_y, max_y[0]) + self._inflation_radius
 
     def update_costs(
         self,
@@ -144,7 +178,38 @@ class InflationLayer(Layer):
         if not self._enabled:
             return
 
-        self._inflate(master_grid, min_i, min_j, max_i, max_j)
+        master = master_grid
+        res = master.resolution
+        self._resolution = res
+        self._inscribed_radius = self._layered_costmap.inscribed_radius
+        self._cell_inflation_radius = master.cell_distance(self._inflation_radius)
+        if self._cell_inflation_radius == 0:
+            return
+
+        sx = master.size_x
+        sy = master.size_y
+        min_i = max(0, min_i)
+        min_j = max(0, min_j)
+        max_i = min(sx, max_i)
+        max_j = min(sy, max_j)
+
+        # Writable view sharing memory with the underlying bytearray.
+        grid = np.frombuffer(master.get_char_map(), dtype=np.uint8).reshape(sy, sx)
+
+        # Build the obstacle mask (distance map seeds). Lethal cells always seed;
+        # NO_INFORMATION cells seed too when inflate_around_unknown is set.
+        obstacles = grid == LETHAL_OBSTACLE
+        if self._inflate_around_unknown:
+            obstacles |= (grid == NO_INFORMATION)
+        if not obstacles.any():
+            self._current = True
+            return
+
+        # Distance (in cells) from every cell to the nearest obstacle. The EDT
+        # measures distance to the nearest zero, so feed the complement.
+        distance_cells = ndimage.distance_transform_edt(~obstacles)
+
+        self.apply_inflation(grid, distance_cells, min_i, min_j, max_i, max_j)
         self._current = True
 
     def reset(self) -> None:
@@ -153,70 +218,85 @@ class InflationLayer(Layer):
         self._current = False
 
     # ------------------------------------------------------------------
-    # Vectorised inflation
+    # Cost mapping
     # ------------------------------------------------------------------
 
-    def _inflate(
+    def compute_cost(self, distance: float) -> int:
+        """
+        Map a distance (in cells) to a cost.
+
+        Parameters
+        ----------
+        distance : float
+            The distance from an obstacle, in cells.
+
+        Returns
+        -------
+        int
+            The corresponding cost value.
+
+        """
+        if distance == 0:
+            return LETHAL_OBSTACLE
+        if distance * self._resolution <= self._inscribed_radius:
+            return INSCRIBED_INFLATED_OBSTACLE
+        factor = math.exp(
+            -1.0 * self._cost_scaling_factor
+            * (distance * self._resolution - self._inscribed_radius))
+        return int((INSCRIBED_INFLATED_OBSTACLE - 1) * factor)
+
+    def apply_inflation(
         self,
-        master: Costmap2D,
+        grid: 'np.ndarray',
+        distance_cells: 'np.ndarray',
         min_i: int,
         min_j: int,
         max_i: int,
         max_j: int,
     ) -> None:
         """
-        Inflate lethal cells using a vectorised Euclidean distance transform.
-
-        Instead of a per-cell BFS (which holds the GIL for seconds on a global
-        costmap and starves the lifecycle bond heartbeat), this computes the
-        distance from every cell to the nearest obstacle in one ``scipy``
-        call and maps those distances to costs with ``numpy``.
+        Apply the inflation costs from the distance map into the master grid window.
 
         Parameters
         ----------
-        master : Costmap2D
-            The master costmap whose cells are inflated in place.
+        grid : numpy.ndarray
+            2D ``uint8`` view of the master costmap (modified in place).
+        distance_cells : numpy.ndarray
+            2D distance-to-nearest-obstacle map, in cells.
         min_i, min_j : int
             Lower x/y boundary of the window to inflate, in cells.
         max_i, max_j : int
             Upper x/y boundary of the window to inflate, in cells.
 
         """
-        sx = master.size_x
-        sy = master.size_y
-        res = master.resolution
-        inscribed = self._layered_costmap.inscribed_radius
-
-        # Writable view sharing memory with the underlying bytearray.
-        grid = np.frombuffer(master.get_char_map(), dtype=np.uint8).reshape(sy, sx)
-
-        # Obstacle seeds: lethal + inscribed cells (and unknown if requested).
-        obstacles = (grid == LETHAL_OBSTACLE) | (grid == INSCRIBED_INFLATED_OBSTACLE)
-        if self._inflate_around_unknown:
-            obstacles |= (grid == NO_INFORMATION)
-        if not obstacles.any():
-            return
-
-        # Distance (in metres) from every cell to the nearest obstacle.
-        # distance_transform_edt measures distance to the nearest zero, so we
-        # feed the complement of the obstacle mask.
-        dist_m = ndimage.distance_transform_edt(~obstacles) * res
-
-        # Vectorised distance -> cost mapping, mirroring _cost_at_distance.
-        within = dist_m <= self._inflation_radius
-        factor = np.exp(-self._cost_scaling_factor * (dist_m - inscribed))
-        cost = ((INSCRIBED_INFLATED_OBSTACLE - 1) * factor).astype(np.int32)
-        cost = np.where(cost > 0, np.clip(cost, 1, INSCRIBED_INFLATED_OBSTACLE - 1), 0)
-
-        new_cost = np.zeros((sy, sx), dtype=np.uint8)
-        new_cost[within] = cost[within].astype(np.uint8)
-        new_cost[within & (dist_m <= inscribed)] = INSCRIBED_INFLATED_OBSTACLE
-
-        # Restrict writes to the dirty window and never lower existing costs or
-        # overwrite real obstacles.
         win = (slice(min_j, max_j), slice(min_i, max_i))
-        sub = grid[win]
-        sub_new = new_cost[win]
-        free = (sub != LETHAL_OBSTACLE) & (sub != INSCRIBED_INFLATED_OBSTACLE)
-        update = free & (sub_new > sub)
-        sub[update] = sub_new[update]
+        old = grid[win].astype(np.int32)
+        dist = distance_cells[win]
+        dist_m = dist * self._resolution
+
+        # Vectorised compute_cost (matches the scalar version exactly).
+        factor = np.exp(
+            -1.0 * self._cost_scaling_factor * (dist_m - self._inscribed_radius))
+        graded = ((INSCRIBED_INFLATED_OBSTACLE - 1) * factor).astype(np.int32)
+        cost = np.where(
+            dist == 0,
+            LETHAL_OBSTACLE,
+            np.where(dist_m <= self._inscribed_radius, INSCRIBED_INFLATED_OBSTACLE, graded),
+        )
+
+        # Only cells within the inflation radius are touched.
+        within = dist <= float(self._cell_inflation_radius)
+
+        # NO_INFORMATION cells: promote only if allowed.
+        is_unknown = old == NO_INFORMATION
+        if self._inflate_unknown:
+            promote = within & is_unknown & (cost > FREE_SPACE)
+        else:
+            promote = within & is_unknown & (cost >= INSCRIBED_INFLATED_OBSTACLE)
+        # Every other in-radius cell takes max(old, cost).
+        take_max = within & ~promote
+
+        result = old.copy()
+        result[promote] = cost[promote]
+        result[take_max] = np.maximum(old[take_max], cost[take_max])
+        grid[win] = result.astype(np.uint8)

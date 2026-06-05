@@ -696,6 +696,10 @@ class Costmap2DROS(LifecycleNode):
 
         self._layered_costmap.update_map(x, y, yaw)
 
+        if self._costmap_publisher is not None:
+            x0, y0, xn, yn = self._layered_costmap.get_updated_bounds()
+            self._costmap_publisher.update_bounds(x0, xn, y0, yn)
+
     # ------------------------------------------------------------------
     # Start / Stop helpers
     # ------------------------------------------------------------------
@@ -922,8 +926,10 @@ class Costmap2DROS(LifecycleNode):
         return response
 
     def reset_layers(self) -> None:
-        """Reset each individual layer."""
+        """Reset the master costmap and each individual layer."""
         if self._layered_costmap:
+            top = self._layered_costmap.get_costmap()
+            top.reset_map(0, 0, top.size_x, top.size_y)
             for layer in self._layered_costmap.get_plugins():
                 layer.reset()
             for f in self._layered_costmap.get_filters():

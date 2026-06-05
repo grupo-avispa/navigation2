@@ -40,7 +40,7 @@ class Layer(ABC):
     def __init__(self) -> None:
         """Initialize the layer state with defaults."""
         self._name: str = ''
-        self._enabled: bool = True
+        self._enabled: bool = False
         self._current: bool = False
         # Typed as Any (not Optional): these are assigned real objects in
         # initialize() before any layer method runs. They come from untyped
@@ -254,6 +254,18 @@ class Layer(ABC):
 
         """
         return self._current
+
+    def set_current(self, current: bool) -> None:
+        """
+        Set the current status of the layer.
+
+        Parameters
+        ----------
+        current : bool
+            Whether the layer's data is up to date.
+
+        """
+        self._current = current
 
     def get_name(self) -> str:
         """

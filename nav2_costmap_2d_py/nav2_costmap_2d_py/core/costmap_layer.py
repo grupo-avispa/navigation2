@@ -23,7 +23,11 @@ It mirrors the nav2_costmap_2d::CostmapLayer from the C++ implementation.
 
 from typing import List, Tuple
 
-from nav2_costmap_2d_py.core.cost_values import FREE_SPACE, NO_INFORMATION
+from nav2_costmap_2d_py.core.cost_values import (
+    CombinationMethod,
+    INSCRIBED_INFLATED_OBSTACLE,
+    NO_INFORMATION,
+)
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
 from nav2_costmap_2d_py.core.layer import Layer
 import numpy as np
@@ -36,6 +40,11 @@ class CostmapLayer(Layer, Costmap2D):
         """Initialize both parent Layer and Costmap2D instances."""
         Layer.__init__(self)
         Costmap2D.__init__(self)
+        self._has_extra_bounds = False
+        self._extra_min_x = 1e6
+        self._extra_min_y = 1e6
+        self._extra_max_x = -1e6
+        self._extra_max_y = -1e6
 
     def match_size(self) -> None:
         """Match the size of the master costmap, resizing this layer's internal grid."""
@@ -71,6 +80,32 @@ class CostmapLayer(Layer, Costmap2D):
         max_x[0] = max(x, max_x[0])
         max_y[0] = max(y, max_y[0])
 
+    @staticmethod
+    def combination_method_from_int(value: int) -> CombinationMethod:
+        """
+        Convert an integer parameter value into a :class:`CombinationMethod`.
+
+        Falls back to ``CombinationMethod.Max`` for unsupported values.
+
+        Parameters
+        ----------
+        value : int
+            The raw ``combination_method`` parameter value (0, 1 or 2).
+
+        Returns
+        -------
+        CombinationMethod
+            The matching combination method.
+
+        """
+        if value == 0:
+            return CombinationMethod.Overwrite
+        if value == 1:
+            return CombinationMethod.Max
+        if value == 2:
+            return CombinationMethod.MaxWithoutUnknownOverwrite
+        return CombinationMethod.Max
+
     def clear_area(
         self,
         start_x: int, start_y: int,
@@ -80,9 +115,8 @@ class CostmapLayer(Layer, Costmap2D):
         """
         Clear an area in the costmap with the given dimensions.
 
-        Cells inside the rectangle are set to ``FREE_SPACE`` (cells holding
-        ``NO_INFORMATION`` are left untouched). If *invert* is True, everything
-        *except* the given dimensions is cleared instead.
+        Cells inside the rectangle are reset to ``NO_INFORMATION``. If *invert*
+        is True, everything *except* the given dimensions is cleared instead.
 
         Parameters
         ----------
@@ -94,16 +128,73 @@ class CostmapLayer(Layer, Costmap2D):
             If True, clear everything outside the rectangle instead of inside.
 
         """
-        self._current = False
-        for x in range(self.size_x):
+        self.set_current(False)
+        grid = self.get_char_map()
+
+        size_x = self.size_x
+        size_y = self.size_y
+
+        start_x = min(max(start_x, 0), size_x)
+        start_y = min(max(start_y, 0), size_y)
+        end_x = min(max(end_x, 0), size_x)
+        end_y = min(max(end_y, 0), size_y)
+
+        for x in range(size_x):
             xrange = start_x < x < end_x
-            for y in range(self.size_y):
-                in_region = xrange and start_y < y < end_y
-                if in_region == invert:
+            for y in range(size_y):
+                if (xrange and start_y < y < end_y) == invert:
                     continue
-                idx = self.get_index(x, y)
-                if self._costmap[idx] != NO_INFORMATION:
-                    self._costmap[idx] = FREE_SPACE
+                index = self.get_index(x, y)
+                if grid[index] != NO_INFORMATION:
+                    grid[index] = NO_INFORMATION
+
+    def add_extra_bounds(self, mx0: float, my0: float, mx1: float, my1: float) -> None:
+        """
+        Add an additional bounding box to be merged in on the next ``use_extra_bounds``.
+
+        Parameters
+        ----------
+        mx0, my0 : float
+            Lower x/y corner of the extra bounding box, in world coordinates.
+        mx1, my1 : float
+            Upper x/y corner of the extra bounding box, in world coordinates.
+
+        """
+        self._extra_min_x = min(mx0, self._extra_min_x)
+        self._extra_max_x = max(mx1, self._extra_max_x)
+        self._extra_min_y = min(my0, self._extra_min_y)
+        self._extra_max_y = max(my1, self._extra_max_y)
+        self._has_extra_bounds = True
+
+    def use_extra_bounds(
+        self,
+        min_x: List[float],
+        min_y: List[float],
+        max_x: List[float],
+        max_y: List[float],
+    ) -> None:
+        """
+        Merge any pending extra bounds into the given bounding box and clear them.
+
+        Parameters
+        ----------
+        min_x, min_y, max_x, max_y : list of float
+            Single-element lists holding the bounding box corners, expanded in
+            place (used as mutable out-parameters).
+
+        """
+        if not self._has_extra_bounds:
+            return
+
+        min_x[0] = min(self._extra_min_x, min_x[0])
+        min_y[0] = min(self._extra_min_y, min_y[0])
+        max_x[0] = max(self._extra_max_x, max_x[0])
+        max_y[0] = max(self._extra_max_y, max_y[0])
+        self._extra_min_x = 1e6
+        self._extra_min_y = 1e6
+        self._extra_max_x = -1e6
+        self._extra_max_y = -1e6
+        self._has_extra_bounds = False
 
     # ------------------------------------------------------------------
     # Merge helpers
@@ -139,6 +230,79 @@ class CostmapLayer(Layer, Costmap2D):
         valid = mine != NO_INFORMATION
         take = valid & ((master == NO_INFORMATION) | (master < mine))
         master[take] = mine[take]
+
+    def update_with_max_without_unknown_overwrite(
+        self,
+        master_grid: Costmap2D,
+        min_i: int,
+        min_j: int,
+        max_i: int,
+        max_j: int,
+    ) -> None:
+        """
+        Update the master grid with the maximum, but never overwrite unknown master cells.
+
+        Like :meth:`update_with_max`, but if the master value is
+        ``NO_INFORMATION`` it is left unchanged.
+
+        Parameters
+        ----------
+        master_grid : Costmap2D
+            The master costmap to update.
+        min_i, min_j : int
+            Lower x/y boundary of the bounding box to update, in cells.
+        max_i, max_j : int
+            Upper x/y boundary of the bounding box to update, in cells.
+
+        """
+        if not self._enabled:
+            return
+        master, mine = self._region_views(master_grid, min_i, min_j, max_i, max_j)
+        valid = mine != NO_INFORMATION
+        take = valid & (master != NO_INFORMATION) & (master < mine)
+        master[take] = mine[take]
+
+    def update_with_addition(
+        self,
+        master_grid: Costmap2D,
+        min_i: int,
+        min_j: int,
+        max_i: int,
+        max_j: int,
+    ) -> None:
+        """
+        Update the master grid by adding this layer's values to it.
+
+        Cells are summed and capped at ``INSCRIBED_INFLATED_OBSTACLE - 1``;
+        ``NO_INFORMATION`` master cells are overwritten and ``NO_INFORMATION``
+        layer cells are skipped.
+
+        Parameters
+        ----------
+        master_grid : Costmap2D
+            The master costmap to update.
+        min_i, min_j : int
+            Lower x/y boundary of the bounding box to update, in cells.
+        max_i, max_j : int
+            Upper x/y boundary of the bounding box to update, in cells.
+
+        """
+        if not self._enabled:
+            return
+        master, mine = self._region_views(master_grid, min_i, min_j, max_i, max_j)
+        valid = mine != NO_INFORMATION
+        # NO_INFORMATION master cells are overwritten with the layer value.
+        overwrite = valid & (master == NO_INFORMATION)
+        master[overwrite] = mine[overwrite]
+        # Otherwise sum and clamp at INSCRIBED_INFLATED_OBSTACLE - 1.
+        add = valid & (master != NO_INFORMATION)
+        summed = master[add].astype(np.int32) + mine[add].astype(np.int32)
+        summed = np.where(
+            summed >= INSCRIBED_INFLATED_OBSTACLE,
+            INSCRIBED_INFLATED_OBSTACLE - 1,
+            summed,
+        )
+        master[add] = summed.astype(np.uint8)
 
     def update_with_overwrite(
         self,

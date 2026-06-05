@@ -13,9 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from nav2_core_py.plugin_provider import PluginProvider
+from nav2_costmap_2d_py.core.clear_costmap_service import ClearCostmapService
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
-from nav2_costmap_2d_py.core.layer import Layer
+from nav2_costmap_2d_py.core.costmap_2d_publisher import Costmap2DPublisher
 from nav2_costmap_2d_py.core.costmap_layer import CostmapLayer
+from nav2_costmap_2d_py.core.layer import Layer
 from nav2_costmap_2d_py.core.layered_costmap import (
     LayeredCostmap,
     make_footprint_from_radius,
@@ -23,9 +26,6 @@ from nav2_costmap_2d_py.core.layered_costmap import (
     pad_footprint,
     transform_footprint,
 )
-from nav2_costmap_2d_py.core.costmap_2d_publisher import Costmap2DPublisher
-from nav2_costmap_2d_py.core.clear_costmap_service import ClearCostmapService
-from nav2_core_py.plugin_provider import PluginProvider
 
 __all__ = [
     'Costmap2D',

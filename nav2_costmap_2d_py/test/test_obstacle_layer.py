@@ -17,10 +17,12 @@
 Unit tests for the ObstacleLayer.
 
 Inspired by nav2_costmap_2d/test/unit/obstacle_layer_test.cpp: laser
-observations are buffered and marked as lethal obstacles in the master grid.
+observations are marked as lethal obstacles in the layer's own grid (during
+``update_bounds``) and then combined into the master grid (during
+``update_costs``); raytracing clears free space and footprint clearing happens
+*after* marking.
 """
 
-import math
 import unittest
 
 from nav2_costmap_2d_py.core.cost_values import FREE_SPACE, LETHAL_OBSTACLE
@@ -30,7 +32,12 @@ from nav2_costmap_2d_py.plugins.obstacle_layer import ObstacleLayer
 import rclpy
 from rclpy.node import Node
 
-from sensor_msgs.msg import LaserScan
+_INF = float('inf')
+
+
+def _bounds():
+    """Return fresh (min_x, min_y, max_x, max_y) single-element bound lists."""
+    return [_INF], [_INF], [-_INF], [-_INF]
 
 
 class TestObstacleLayer(unittest.TestCase):
@@ -56,6 +63,7 @@ class TestObstacleLayer(unittest.TestCase):
         self.layer.initialize(self.lc, 'obstacle_layer', None, self.node)
         self.lc.add_plugin(self.layer)
         self.lc.resize_map(10, 10, 1.0, 0.0, 0.0)
+        self.obs = self.layer._observations[0]
 
     def tearDown(self) -> None:
         """Destroy the test node."""
@@ -65,46 +73,68 @@ class TestObstacleLayer(unittest.TestCase):
         """Obstacle layers are clearable."""
         self.assertTrue(self.layer.is_clearable())
 
-    def test_marking_from_buffer(self) -> None:
-        """A buffered observation is marked as a lethal obstacle."""
+    def test_marking_into_master(self) -> None:
+        """A buffered return is marked lethal in the layer and combined into the master."""
         master = self.lc.get_costmap()
-        self.layer._observations[0]['buffer'].append((5.5, 5.5))
+        self.obs.origin = (5.5, 5.5)
+        self.obs.points = [(6.5, 5.5)]
 
+        min_x, min_y, max_x, max_y = _bounds()
+        self.layer.update_bounds(5.5, 5.5, 0.0, min_x, min_y, max_x, max_y)
         self.layer.update_costs(master, 0, 0, 10, 10)
 
-        self.assertEqual(master.get_cost(5, 5), LETHAL_OBSTACLE)
-        # A cell with no observation stays free.
-        self.assertEqual(master.get_cost(0, 0), FREE_SPACE)
-
-    def test_marking_outside_window(self) -> None:
-        """Observations outside the update window are not marked."""
-        master = self.lc.get_costmap()
-        self.layer._observations[0]['buffer'].append((5.5, 5.5))
-        # Window excludes cell (5, 5)
-        self.layer.update_costs(master, 0, 0, 3, 3)
+        self.assertEqual(master.get_cost(6, 5), LETHAL_OBSTACLE)
+        # The raytraced free cell next to the origin stays free.
         self.assertEqual(master.get_cost(5, 5), FREE_SPACE)
 
-    def test_laser_callback_buffers_points(self) -> None:
-        """A LaserScan callback fills the observation buffer."""
-        scan = LaserScan()
-        scan.header.frame_id = 'base_link'
-        scan.angle_min = 0.0
-        scan.angle_increment = math.pi / 2.0
-        scan.range_min = 0.0
-        scan.range_max = 10.0
-        scan.ranges = [1.0, 1.0, 1.0, 1.0]
+    def test_marking_filtered_by_range(self) -> None:
+        """A return beyond obstacle_max_range is not marked."""
+        master = self.lc.get_costmap()
+        self.obs.origin = (0.5, 0.5)
+        self.obs.points = [(9.5, 9.5)]  # ~12.7 m away, beyond default 2.5 m
 
-        buffer = self.layer._observations[0]['buffer']
-        self.layer._laser_callback(
-            scan, buffer, True, True, 2.5, 0.0, 3.0, 0.0
-        )
-        self.assertTrue(len(buffer) > 0)
+        min_x, min_y, max_x, max_y = _bounds()
+        self.layer.update_bounds(0.5, 0.5, 0.0, min_x, min_y, max_x, max_y)
+        self.layer.update_costs(master, 0, 0, 10, 10)
+        self.assertEqual(master.get_cost(9, 9), FREE_SPACE)
 
-    def test_reset_clears_buffer(self) -> None:
-        """Reset empties the buffered observations."""
-        self.layer._observations[0]['buffer'].append((1.0, 1.0))
+    def test_raytrace_clears_obstacle(self) -> None:
+        """A clearing ray frees a previously lethal cell in the layer."""
+        # Pre-mark a lethal cell in the layer's own grid.
+        self.layer.set_cost(3, 5, LETHAL_OBSTACLE)
+        # Clearing-only observation whose ray passes through (3, 5).
+        self.obs.marking = False
+        self.obs.clearing = True
+        self.obs.origin = (0.5, 5.5)
+        self.obs.points = [(6.5, 5.5)]
+
+        min_x, min_y, max_x, max_y = _bounds()
+        self.layer.update_bounds(0.5, 5.5, 0.0, min_x, min_y, max_x, max_y)
+        self.assertEqual(self.layer.get_cost(3, 5), FREE_SPACE)
+
+    def test_footprint_clearing_after_marking(self) -> None:
+        """Footprint clearing removes an obstacle marked under the robot footprint."""
+        master = self.lc.get_costmap()
+        # A square footprint around the robot at (5.5, 5.5).
+        self.lc.set_footprint([(-1.5, -1.5), (1.5, -1.5), (1.5, 1.5), (-1.5, 1.5)])
+        # A return that falls under the footprint.
+        self.obs.origin = (5.5, 5.5)
+        self.obs.points = [(5.5, 5.5)]
+
+        min_x, min_y, max_x, max_y = _bounds()
+        self.layer.update_bounds(5.5, 5.5, 0.0, min_x, min_y, max_x, max_y)
+        self.layer.update_costs(master, 0, 0, 10, 10)
+        # The self-mark under the footprint is cleared (C++ clears after marking).
+        self.assertEqual(master.get_cost(5, 5), FREE_SPACE)
+
+    def test_reset_clears_observations(self) -> None:
+        """Reset empties the buffered observations and flags a reset."""
+        self.obs.origin = (1.0, 1.0)
+        self.obs.points = [(1.0, 1.0)]
         self.layer.reset()
-        self.assertEqual(len(self.layer._observations[0]['buffer']), 0)
+        self.assertIsNone(self.obs.origin)
+        self.assertEqual(self.obs.points, [])
+        self.assertTrue(self.layer._was_reset)
 
 
 if __name__ == '__main__':

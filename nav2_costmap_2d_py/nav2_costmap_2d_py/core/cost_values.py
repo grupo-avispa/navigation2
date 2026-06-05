@@ -20,6 +20,23 @@ It mirrors the nav2_costmap_2d cost_values.hpp from the C++ implementation,
 defining the special cost values used throughout the costmap.
 """
 
+from enum import IntEnum
+
+
+class CombinationMethod(IntEnum):
+    """Describe the method used to add data to the master costmap (default Max)."""
+
+    # Every valid value from this layer is written into the master grid
+    # (does not copy NO_INFORMATION).
+    Overwrite = 0
+    # Set the new value to the maximum of the master grid's value and this
+    # layer's value. If the master value is NO_INFORMATION it is overwritten;
+    # if the layer's value is NO_INFORMATION the master value does not change.
+    Max = 1
+    # Like Max but if the master value is NO_INFORMATION it is NOT overwritten.
+    MaxWithoutUnknownOverwrite = 2
+
+
 # No information / unknown cell
 NO_INFORMATION: int = 255
 
@@ -29,8 +46,8 @@ LETHAL_OBSTACLE: int = 254
 # Inscribed inflated obstacle (robot center at this cell → collision)
 INSCRIBED_INFLATED_OBSTACLE: int = 253
 
+# Maximum non-obstacle cost
+MAX_NON_OBSTACLE: int = 252
+
 # Free space
 FREE_SPACE: int = 0
-
-# Maximum non-lethal cost
-MAX_NON_LETHAL: int = 252

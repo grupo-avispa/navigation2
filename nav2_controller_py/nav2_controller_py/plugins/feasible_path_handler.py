@@ -33,21 +33,7 @@ from rcl_interfaces.msg import SetParametersResult
 
 
 class FeasiblePathHandler(PathHandler):
-    """
-    Prune the global plan around the robot and transform the remaining portion.
-
-    Mirrors nav2_controller::FeasiblePathHandler.
-
-    Parameters (under ``<plugin_name>.``):
-      reject_unit_path            (bool,  default False)
-      max_robot_pose_search_dist  (float, default half the costmap max extent)
-      prune_distance              (float, default 2.0 m)
-      enforce_path_inversion      (bool,  default False)
-      enforce_path_rotation       (bool,  default False)
-      inversion_xy_tolerance      (float, default 0.2 m)
-      inversion_yaw_tolerance     (float, default 0.4 rad)
-      minimum_rotation_angle      (float, default 0.785 rad)
-    """
+    """Prune the global plan around the robot and transform the remaining portion."""
 
     def __init__(self):
         self._node = None

@@ -95,6 +95,12 @@ class Costmap2DPublisher:
         self._saved_size_x: Optional[int] = None
         self._saved_size_y: Optional[int] = None
 
+        # Dirty window accumulated since the last publish (cell indices),
+        self._x0 = 0
+        self._xn = 0
+        self._y0 = 0
+        self._yn = 0
+
         # Latched QoS: KEEP_LAST depth 1, RELIABLE, TRANSIENT_LOCAL
         latched_qos = QoSProfile(
             depth=1,
@@ -159,6 +165,26 @@ class Costmap2DPublisher:
     # Lifecycle
     # ------------------------------------------------------------------
 
+    def update_bounds(self, x0: int, xn: int, y0: int, yn: int) -> None:
+        """
+        Accumulate the dirty window to publish on the next incremental update.
+
+        Call it once per costmap update cycle with the bounds reported by the layered
+        costmap.
+
+        Parameters
+        ----------
+        x0, xn : int
+            Lower/upper x cell-index bounds of the dirty region.
+        y0, yn : int
+            Lower/upper y cell-index bounds of the dirty region.
+
+        """
+        self._x0 = min(x0, self._x0)
+        self._xn = max(xn, self._xn)
+        self._y0 = min(y0, self._y0)
+        self._yn = max(yn, self._yn)
+
     def on_activate(self) -> None:
         """Activate the publisher so subsequent calls publish data."""
         self._active = True
@@ -201,13 +227,19 @@ class Costmap2DPublisher:
 
             if send_full:
                 self._publish_full(costmap)
-            else:
+            elif self._x0 < self._xn:
+                # Publish just the dirty window accumulated via update_bounds.
                 self._publish_update(costmap)
 
             self._saved_origin_x = current_origin_x
             self._saved_origin_y = current_origin_y
             self._saved_size_x = current_size_x
             self._saved_size_y = current_size_y
+
+            # Reset the dirty window
+            self._xn = self._yn = 0
+            self._x0 = current_size_x
+            self._y0 = current_size_y
 
     def _publish_full(self, costmap: Costmap2D) -> None:
         """
@@ -238,22 +270,32 @@ class Costmap2DPublisher:
 
     def _publish_update(self, costmap: Costmap2D) -> None:
         """
-        Publish an OccupancyGridUpdate (incremental).
+        Publish an OccupancyGridUpdate covering only the accumulated dirty window.
 
         Parameters
         ----------
         costmap : Costmap2D
-            The costmap whose contents are published as an incremental update.
+            The costmap whose dirty window is published as an incremental update.
 
         """
+        x0, y0, xn, yn = self._x0, self._y0, self._xn, self._yn
+        width = xn - x0
+        height = yn - y0
+
         msg = OccupancyGridUpdate()
-        now = self._node.get_clock().now().to_msg()
-        msg.header.stamp = now
+        msg.header.stamp = self._node.get_clock().now().to_msg()
         msg.header.frame_id = self._global_frame
-        msg.x = 0
-        msg.y = 0
-        msg.width = costmap.size_x
-        msg.height = costmap.size_y
-        raw = costmap.get_char_map()
-        msg.data = self._translate_costmap(raw)
+        msg.x = x0
+        msg.y = y0
+        msg.width = width
+        msg.height = height
+
+        grid = np.frombuffer(costmap.get_char_map(), dtype=np.uint8)
+        map_width = costmap.size_x
+        out = np.empty(width * height, dtype=np.int8)
+        for row in range(height):
+            src = (y0 + row) * map_width + x0
+            out[row * width:(row + 1) * width] = \
+                self._COST_TRANSLATION_TABLE_NP[grid[src:src + width]]
+        msg.data = out.tolist()
         self._costmap_update_pub.publish(msg)

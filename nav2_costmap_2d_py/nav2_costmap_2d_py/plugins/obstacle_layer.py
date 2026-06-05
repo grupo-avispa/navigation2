@@ -16,7 +16,7 @@
 """
 ObstacleLayer for nav2_costmap_2d_py.
 
-Marks/clears cells from laser scan and point-cloud sensor observations.
+Marks/clears cells from laser scan sensor observations.
 
 It mirrors the nav2_costmap_2d::ObstacleLayer from the C++ implementation.
 
@@ -26,38 +26,59 @@ Plugin type string:
 
 import math
 import threading
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
-from nav2_costmap_2d_py.core.cost_values import FREE_SPACE, LETHAL_OBSTACLE
+from nav2_costmap_2d_py.core.cost_values import CombinationMethod, FREE_SPACE, LETHAL_OBSTACLE
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
 from nav2_costmap_2d_py.core.costmap_layer import CostmapLayer
 from nav2_costmap_2d_py.core.layered_costmap import transform_footprint
 from rclpy.duration import Duration
+from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
+
+
+class Observation:
+    """
+    A buffered sensor observation.
+
+    Holds the sensor ``origin`` and the return ``points`` (both already in the
+    costmap global frame) plus the per-source marking/clearing ranges.
+    """
+
+    def __init__(self) -> None:
+        """Initialize an empty observation."""
+        self.origin: Optional[Tuple[float, float]] = None
+        self.points: List[Tuple[float, float]] = []
+        self.marking: bool = True
+        self.clearing: bool = True
+        self.obstacle_max_range: float = 2.5
+        self.obstacle_min_range: float = 0.0
+        self.raytrace_max_range: float = 3.0
+        self.raytrace_min_range: float = 0.0
 
 
 class ObstacleLayer(CostmapLayer):
     """
-    Take in laser and pointcloud data to populate the 2D costmap.
+    Take in laser data to populate the 2D costmap.
 
-    Marks and clears cells from laser scan (and point-cloud) sensor
-    observations.
+    Marks and clears cells from laser scan sensor observations.
     """
 
     def __init__(self) -> None:
         """Initialize obstacle layer defaults."""
         super().__init__()
-        self._combination_method = 1   # 1 = max
+        self._combination_method = CombinationMethod.Max
         self._footprint_clearing_enabled = True
         self._max_obstacle_height = 2.0
+        self._rolling_window = False
         self._observation_sources: List[str] = []
         self._subs: List[Any] = []
-        self._observations: List[Dict[str, Any]] = []   # {buffer, marking, clearing}
+        self._observations: List[Observation] = []
         self._obs_lock = threading.Lock()
+        self._was_reset = False
 
-        # Dirty bounds
-        self._min_x = self._min_y = float('inf')
-        self._max_x = self._max_y = float('-inf')
+        # Footprint clearing cache (transformed footprint in world coordinates)
+        self._transformed_footprint: List[Tuple[float, float]] = []
 
     # ------------------------------------------------------------------
     # Layer interface
@@ -66,14 +87,19 @@ class ObstacleLayer(CostmapLayer):
     def on_initialize(self) -> None:
         """Initialize the layer: read parameters and subscribe to observation sources."""
         node = self._node
+        self._rolling_window = self._layered_costmap.is_rolling()
 
         self._enabled = self._declare_parameter_if_not_declared('enabled', True)
         src_string = self._declare_parameter_if_not_declared('observation_sources', 'scan')
-        self._combination_method = self._declare_parameter_if_not_declared('combination_method', 1)
+        combination_method = self._declare_parameter_if_not_declared('combination_method', 1)
+        self._combination_method = self.combination_method_from_int(combination_method)
         self._footprint_clearing_enabled = self._declare_parameter_if_not_declared(
             'footprint_clearing_enabled', True)
         self._max_obstacle_height = self._declare_parameter_if_not_declared(
             'max_obstacle_height', 2.0)
+
+        self.match_size()
+        self._current = True
 
         sources = [s.strip() for s in src_string.split() if s.strip()]
         self._observation_sources = sources
@@ -88,47 +114,28 @@ class ObstacleLayer(CostmapLayer):
             # Resolve relative topics against the parent namespace;
             # the costmap node lives in the '/global_costmap' sub-namespace.
             topic = self.join_with_parent_namespace(_ps('topic', f'/{src}'))
-            marking = _ps('marking', True)
-            clearing = _ps('clearing', True)
-            obs_max = _ps('obstacle_max_range', 2.5)
-            obs_min = _ps('obstacle_min_range', 0.0)
-            ray_max = _ps('raytrace_max_range', 3.0)
-            ray_min = _ps('raytrace_min_range', 0.0)
 
-            obs_buffer: List[Tuple[float, float]] = []
-            # Closure captures obs_buffer, marking, clearing, ranges
+            obs = Observation()
+            obs.marking = _ps('marking', True)
+            obs.clearing = _ps('clearing', True)
+            obs.obstacle_max_range = _ps('obstacle_max_range', 2.5)
+            obs.obstacle_min_range = _ps('obstacle_min_range', 0.0)
+            obs.raytrace_max_range = _ps('raytrace_max_range', 3.0)
+            obs.raytrace_min_range = _ps('raytrace_min_range', 0.0)
 
-            def _make_cb(
-                buf: List[Tuple[float, float]],
-                mk: bool, cl: bool,
-                o_max: float, o_min: float,
-                r_max: float, r_min: float,
-            ) -> Callable[[LaserScan], None]:
+            def _make_cb(o: Observation = obs) -> Callable[[LaserScan], None]:
                 def cb(msg: LaserScan) -> None:
-                    self._laser_callback(
-                        msg, buf, mk, cl, o_max, o_min, r_max, r_min
-                    )
+                    self._laser_scan_callback(msg, o)
                 return cb
 
-            sub = node.create_subscription(
-                LaserScan, topic,
-                _make_cb(
-                    obs_buffer, marking, clearing,
-                    obs_max, obs_min, ray_max, ray_min
-                ),
-                10,
-            )
+            sub = node.create_subscription(LaserScan, topic, _make_cb(), 10)
             self._subs.append(sub)
             with self._obs_lock:
-                self._observations.append({
-                    'buffer': obs_buffer,
-                    'marking': marking,
-                    'clearing': clearing,
-                })
+                self._observations.append(obs)
 
             node.get_logger().info(
                 f'[ObstacleLayer] "{self._name}" subscribed to "{topic}" '
-                f'(mark={marking}, clear={clearing})'
+                f'(mark={obs.marking}, clear={obs.clearing})'
             )
 
     def update_bounds(
@@ -153,23 +160,91 @@ class ObstacleLayer(CostmapLayer):
             place.
 
         """
+        if self._rolling_window:
+            self.update_origin(
+                robot_x - self.size_x_meters / 2,
+                robot_y - self.size_y_meters / 2)
         if not self._enabled:
             return
+        self.use_extra_bounds(min_x, min_y, max_x, max_y)
 
-        # Clear footprint region if enabled
-        if self._footprint_clearing_enabled:
-            fp = self._layered_costmap.get_footprint()
-            self._clear_footprint_region(robot_x, robot_y, robot_yaw, fp)
-
-        # Expand bounds to cover all current observations
         with self._obs_lock:
-            for obs in self._observations:
-                for pt in obs['buffer']:
-                    ox, oy = pt
-                    min_x[0] = min(min_x[0], ox)
-                    min_y[0] = min(min_y[0], oy)
-                    max_x[0] = max(max_x[0], ox)
-                    max_y[0] = max(max_y[0], oy)
+            observations = [self._snapshot(o) for o in self._observations]
+
+        # raytrace freespace for every clearing observation
+        for obs in observations:
+            if obs.clearing:
+                self.raytrace_freespace(obs, min_x, min_y, max_x, max_y)
+
+        # mark obstacles for every marking observation
+        for obs in observations:
+            if not obs.marking or obs.origin is None:
+                continue
+            ox, oy = obs.origin
+            max_range_cells = self.cell_distance(obs.obstacle_max_range)
+            min_range_cells = self.cell_distance(obs.obstacle_min_range)
+
+            ok, x0, y0 = self.world_to_map(ox, oy)
+            if not ok:
+                continue
+
+            for (px, py) in obs.points:
+                ok, mx, my = self.world_to_map(px, py)
+                if not ok:
+                    continue
+
+                # Pre-filter by world distance to avoid cell-discretization
+                # boundary effects.
+                wdx = px - ox
+                wdy = py - oy
+                world_dist_sq = wdx * wdx + wdy * wdy
+                if world_dist_sq > obs.obstacle_max_range * obs.obstacle_max_range:
+                    continue
+                if world_dist_sq < obs.obstacle_min_range * obs.obstacle_min_range:
+                    continue
+
+                # Distance in cell space, matching the raytrace clearing.
+                dx = mx - x0
+                dy = my - y0
+                dist = int(math.hypot(dx, dy))
+                if dist > max_range_cells:
+                    continue
+                if dist < min_range_cells:
+                    continue
+
+                self._costmap[self.get_index(mx, my)] = LETHAL_OBSTACLE
+                self.touch(px, py, min_x, min_y, max_x, max_y)
+
+        self.update_footprint(robot_x, robot_y, robot_yaw, min_x, min_y, max_x, max_y)
+
+    def update_footprint(
+        self,
+        robot_x: float,
+        robot_y: float,
+        robot_yaw: float,
+        min_x: List[float],
+        min_y: List[float],
+        max_x: List[float],
+        max_y: List[float],
+    ) -> None:
+        """
+        Expand the bounds to include the robot footprint (for footprint clearing).
+
+        Parameters
+        ----------
+        robot_x, robot_y, robot_yaw : float
+            Current robot pose in the global frame.
+        min_x, min_y, max_x, max_y : list of float
+            Single-element lists holding the update window bounds, expanded in
+            place.
+
+        """
+        if not self._footprint_clearing_enabled:
+            return
+        self._transformed_footprint = transform_footprint(
+            robot_x, robot_y, robot_yaw, self._layered_costmap.get_footprint())
+        for (fx, fy) in self._transformed_footprint:
+            self.touch(fx, fy, min_x, min_y, max_x, max_y)
 
     def update_costs(
         self,
@@ -181,6 +256,10 @@ class ObstacleLayer(CostmapLayer):
     ) -> None:
         """
         Update the costs in the master costmap within the given window.
+
+        Clears the footprint region (after marking, so the robot never marks
+        itself), then combines this layer into the master with the configured
+        combination method. Mirrors nav2_costmap_2d::ObstacleLayer::updateCosts.
 
         Parameters
         ----------
@@ -195,22 +274,31 @@ class ObstacleLayer(CostmapLayer):
         if not self._enabled:
             return
 
-        with self._obs_lock:
-            for obs in self._observations:
-                if obs['marking']:
-                    for (wx, wy) in obs['buffer']:
-                        ok, mx, my = master_grid.world_to_map(wx, wy)
-                        if ok and min_i <= mx < max_i and min_j <= my < max_j:
-                            master_grid.set_cost(mx, my, LETHAL_OBSTACLE)
+        # if not current due to reset, set current now after clearing
+        if not self.is_current() and self._was_reset:
+            self._was_reset = False
+            self.set_current(True)
 
-        self._current = True
+        if self._footprint_clearing_enabled:
+            self.set_convex_polygon_cost(self._transformed_footprint, FREE_SPACE)
+
+        if self._combination_method == CombinationMethod.Overwrite:
+            self.update_with_overwrite(master_grid, min_i, min_j, max_i, max_j)
+        elif self._combination_method == CombinationMethod.Max:
+            self.update_with_max(master_grid, min_i, min_j, max_i, max_j)
+        elif self._combination_method == CombinationMethod.MaxWithoutUnknownOverwrite:
+            self.update_with_max_without_unknown_overwrite(
+                master_grid, min_i, min_j, max_i, max_j)
 
     def reset(self) -> None:
-        """Reset this costmap layer, clearing all buffered observations."""
+        """Reset this costmap layer, clearing its accumulated costmap and observations."""
+        self.reset_maps()
         with self._obs_lock:
             for obs in self._observations:
-                obs['buffer'].clear()
-        self._current = False
+                obs.origin = None
+                obs.points = []
+        self.set_current(False)
+        self._was_reset = True
 
     def is_clearable(self) -> bool:
         """
@@ -225,102 +313,216 @@ class ObstacleLayer(CostmapLayer):
         return True
 
     # ------------------------------------------------------------------
+    # Raytrace clearing
+    # ------------------------------------------------------------------
+
+    def raytrace_freespace(
+        self,
+        clearing_observation: Observation,
+        min_x: List[float],
+        min_y: List[float],
+        max_x: List[float],
+        max_y: List[float],
+    ) -> None:
+        """
+        Clear free space along the rays from a clearing observation.
+
+        Parameters
+        ----------
+        clearing_observation : Observation
+            The clearing observation (origin + return points).
+        min_x, min_y, max_x, max_y : list of float
+            Single-element lists holding the update window bounds, expanded in
+            place.
+
+        """
+        if clearing_observation.origin is None:
+            return
+        ox, oy = clearing_observation.origin
+
+        ok, x0, y0 = self.world_to_map(ox, oy)
+        if not ok:
+            self._node.get_logger().warning(
+                f'[ObstacleLayer] "{self._name}": sensor origin '
+                f'({ox:.2f}, {oy:.2f}) is out of map bounds, cannot raytrace.',
+                throttle_duration_sec=2.0)
+            return
+
+        origin_x = self.origin_x
+        origin_y = self.origin_y
+        map_end_x = origin_x + self.size_x * self.resolution
+        map_end_y = origin_y + self.size_y * self.resolution
+
+        self.touch(ox, oy, min_x, min_y, max_x, max_y)
+
+        cell_raytrace_max_range = self.cell_distance(clearing_observation.raytrace_max_range)
+        cell_raytrace_min_range = self.cell_distance(clearing_observation.raytrace_min_range)
+
+        for (wx, wy) in clearing_observation.points:
+            # Make sure the endpoint we're raytracing to isn't off the costmap
+            # and scale it back onto the border if necessary.
+            a = wx - ox
+            b = wy - oy
+
+            if wx < origin_x:
+                t = (origin_x - ox) / a
+                wx = origin_x
+                wy = oy + b * t
+            if wy < origin_y:
+                t = (origin_y - oy) / b
+                wx = ox + a * t
+                wy = origin_y
+            if wx > map_end_x:
+                t = (map_end_x - ox) / a
+                wx = map_end_x - 0.001
+                wy = oy + b * t
+            if wy > map_end_y:
+                t = (map_end_y - oy) / b
+                wx = ox + a * t
+                wy = map_end_y - 0.001
+
+            ok, x1, y1 = self.world_to_map(wx, wy)
+            if not ok:
+                continue
+
+            self.raytrace_line(
+                FREE_SPACE, x0, y0, x1, y1,
+                cell_raytrace_max_range, cell_raytrace_min_range)
+
+            self.update_raytrace_bounds(
+                ox, oy, wx, wy,
+                clearing_observation.raytrace_max_range,
+                clearing_observation.raytrace_min_range,
+                min_x, min_y, max_x, max_y)
+
+    def update_raytrace_bounds(
+        self,
+        ox: float, oy: float,
+        wx: float, wy: float,
+        max_range: float, min_range: float,
+        min_x: List[float], min_y: List[float],
+        max_x: List[float], max_y: List[float],
+    ) -> None:
+        """
+        Expand the bounds to cover a cleared ray.
+
+        Parameters
+        ----------
+        ox, oy : float
+            Sensor origin, in world coordinates.
+        wx, wy : float
+            Ray endpoint, in world coordinates.
+        max_range, min_range : float
+            Raytrace max/min ranges, in metres.
+        min_x, min_y, max_x, max_y : list of float
+            Single-element lists holding the update window bounds, expanded in
+            place.
+
+        """
+        dx = wx - ox
+        dy = wy - oy
+        full_distance = math.hypot(dx, dy)
+        if full_distance < min_range:
+            return
+        scale = 1.0 if full_distance == 0.0 else min(1.0, max_range / full_distance)
+        ex = ox + dx * scale
+        ey = oy + dy * scale
+        self.touch(ex, ey, min_x, min_y, max_x, max_y)
+
+    # ------------------------------------------------------------------
     # LaserScan callback
     # ------------------------------------------------------------------
 
-    def _laser_callback(
-        self,
-        msg: LaserScan,
-        buffer: List[Tuple[float, float]],
-        marking: bool,
-        clearing: bool,
-        obs_max_range: float,
-        obs_min_range: float,
-        ray_max_range: float,
-        ray_min_range: float,
-    ) -> None:
+    def _snapshot(self, obs: Observation) -> Observation:
         """
-        Handle buffering LaserScan messages: extract obstacle points into *buffer*.
+        Return a shallow copy of an observation's volatile data (origin/points).
 
-        Uses TF to transform to the global frame if available; otherwise
-        uses the message header frame directly.
+        Parameters
+        ----------
+        obs : Observation
+            The observation to snapshot.
+
+        """
+        snap = Observation()
+        snap.origin = obs.origin
+        snap.points = list(obs.points)
+        snap.marking = obs.marking
+        snap.clearing = obs.clearing
+        snap.obstacle_max_range = obs.obstacle_max_range
+        snap.obstacle_min_range = obs.obstacle_min_range
+        snap.raytrace_max_range = obs.raytrace_max_range
+        snap.raytrace_min_range = obs.raytrace_min_range
+        return snap
+
+    def _laser_scan_callback(self, msg: LaserScan, obs: Observation) -> None:
+        """
+        Buffer a LaserScan: store the sensor origin and the return points.
+
+        Transforms the scan into the costmap global frame using the full sensor
+        TF (translation + 3D rotation). The stored origin/points are consumed by
+        ``update_bounds`` for raytrace clearing and marking.
 
         Parameters
         ----------
         msg : LaserScan
             The incoming laser scan.
-        buffer : list of tuple of float
-            Output buffer of ``(x, y)`` obstacle points, replaced in place.
-        marking, clearing : bool
-            Whether this source marks and/or clears obstacles.
-        obs_max_range, obs_min_range : float
-            Range window for points considered obstacles, in metres.
-        ray_max_range, ray_min_range : float
-            Range window used for raytrace clearing, in metres.
+        obs : Observation
+            The observation record for this source (``origin``/``points`` are
+            replaced in place).
 
         """
-        # Transform origin: try TF, fall back to identity
-        ox, oy = 0.0, 0.0
-        if self._tf_buffer is not None:
+        ray_min_range = obs.raytrace_min_range
+        ray_max_range = obs.raytrace_max_range
+        if self._tf_buffer is None:
+            return
+        target_frame = (
+            self._layered_costmap.get_global_frame_id()
+            if self._layered_costmap is not None
+            else ''
+        )
+        try:
+            transform = self._tf_buffer.lookup_transform(
+                target_frame,
+                msg.header.frame_id,
+                msg.header.stamp,
+                timeout=Duration(seconds=0.1),
+            )
+        except Exception:  # noqa: B902
             try:
-                target_frame = (
-                    self._layered_costmap.get_global_frame_id()
-                    if self._layered_costmap is not None
-                    else ''
-                )
                 transform = self._tf_buffer.lookup_transform(
-                    target_frame,
-                    msg.header.frame_id,
-                    msg.header.stamp,
-                    timeout=Duration(seconds=0.1),
-                )
-                ox = transform.transform.translation.x
-                oy = transform.transform.translation.y
-            except Exception:
-                pass
+                    target_frame, msg.header.frame_id, Time(),
+                    timeout=Duration(seconds=0.1))
+            except Exception as ex:  # noqa: BLE001
+                self._node.get_logger().warning(
+                    f'[ObstacleLayer] "{self._name}": cannot transform scan from '
+                    f"'{msg.header.frame_id}' to '{target_frame}': {ex}",
+                    throttle_duration_sec=2.0)
+                return
 
-        angle = msg.angle_min
+        ox = transform.transform.translation.x
+        oy = transform.transform.translation.y
+        q = transform.transform.rotation
+        xx, yy, zz = q.x * q.x, q.y * q.y, q.z * q.z
+        xy = q.x * q.y
+        wz_ = q.w * q.z
+        r00, r01 = 1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz_)
+        r10, r11 = 2.0 * (xy + wz_), 1.0 - 2.0 * (xx + zz)
+
         new_pts = []
-        for r in msg.ranges:
-            angle += msg.angle_increment
+        for i, r in enumerate(msg.ranges):
             if math.isnan(r) or math.isinf(r):
                 continue
-            if r < obs_min_range or r > obs_max_range:
+            if r < ray_min_range or r > ray_max_range:
                 continue
-            wx = ox + r * math.cos(angle)
-            wy = oy + r * math.sin(angle)
+            angle = msg.angle_min + i * msg.angle_increment
+            px = r * math.cos(angle)
+            py = r * math.sin(angle)
+            wx = ox + r00 * px + r01 * py
+            wy = oy + r10 * px + r11 * py
             new_pts.append((wx, wy))
 
         with self._obs_lock:
-            buffer.clear()
-            buffer.extend(new_pts)
+            obs.origin = (ox, oy)
+            obs.points = new_pts
 
-        self._current = True
-
-    def _clear_footprint_region(
-        self,
-        rx: float,
-        ry: float,
-        rth: float,
-        footprint: List[Tuple[float, float]],
-    ) -> None:
-        """
-        Clear the costmap layer info below the robot's footprint.
-
-        Parameters
-        ----------
-        rx, ry : float
-            World position of the robot.
-        rth : float
-            Orientation of the robot, in radians.
-        footprint : list of tuple of float
-            The robot footprint as ``(x, y)`` points in the robot frame.
-
-        """
-        if not footprint:
-            return
-        if self._layered_costmap is None:
-            return
-        master = self._layered_costmap.get_costmap()
-        world_fp = transform_footprint(rx, ry, rth, footprint)
-        master.set_convex_polygon_cost(world_fp, FREE_SPACE)
+        self.set_current(True)

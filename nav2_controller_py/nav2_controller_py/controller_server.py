@@ -428,7 +428,7 @@ class ControllerServer(LifecycleNode):
         return CancelResponse.ACCEPT
 
     async def _compute_control(self, goal_handle):
-        """Handle the FollowPath action; mirrors ControllerServer::computeControl()."""
+        """Handle the FollowPath action."""
         with self._param_handler.get_mutex():
             return self._compute_control_impl(goal_handle)
 
@@ -548,7 +548,7 @@ class ControllerServer(LifecycleNode):
     # ------------------------------------------------------------------
 
     def _wait_for_costmap(self) -> float:
-        """Wait for the costmap to become current; mirrors waitForCostmap()."""
+        """Wait for the costmap to become current."""
         timeout = self._params.costmap_update_timeout
         if self._costmap_ros is not None and timeout.nanoseconds > 0:
             waiting_start = self.get_clock().now()
@@ -562,7 +562,7 @@ class ControllerServer(LifecycleNode):
         return 0.0
 
     def _set_planner_path(self, path: Path) -> None:
-        """Assign the path to the controller; mirrors setPlannerPath()."""
+        """Assign the path to the controller."""
         self.get_logger().debug(
             f'Providing path to the controller {self._current_controller}')
         if not path.poses:
@@ -583,7 +583,7 @@ class ControllerServer(LifecycleNode):
         self._current_path = path
 
     def _compute_and_publish_velocity(self, goal_handle) -> None:
-        """Compute and publish velocity; mirrors computeAndPublishVelocity()."""
+        """Compute and publish velocity."""
         pose = self._get_robot_pose()
         if pose is None:
             raise ControllerTFError('Failed to obtain robot pose')
@@ -684,7 +684,7 @@ class ControllerServer(LifecycleNode):
 
     def _update_global_path(self, goal_handle) -> None:
         """
-        Handle goal preemption; mirrors updateGlobalPath().
+        Handle goal preemption.
 
         rclpy action servers do not expose the C++ preempt/accept-pending-goal
         API: a new FollowPath goal starts a fresh execute callback instead.
@@ -693,7 +693,7 @@ class ControllerServer(LifecycleNode):
         pass
 
     def _publish_velocity(self, velocity: TwistStamped) -> None:
-        """Validate and publish a velocity command; mirrors publishVelocity()."""
+        """Validate and publish a velocity command."""
         t = velocity.twist
         vals = (t.linear.x, t.linear.y, t.linear.z, t.angular.x, t.angular.y, t.angular.z)
         if any(math.isnan(v) or math.isinf(v) for v in vals):
@@ -704,7 +704,7 @@ class ControllerServer(LifecycleNode):
             self._vel_publisher.publish(velocity)
 
     def _publish_zero_velocity(self) -> None:
-        """Publish a zero velocity command; mirrors publishZeroVelocity()."""
+        """Publish a zero velocity command."""
         velocity = TwistStamped()
         if self._costmap_ros is not None:
             velocity.header.frame_id = self._costmap_ros.get_base_frame_id()
@@ -712,14 +712,14 @@ class ControllerServer(LifecycleNode):
         self._publish_velocity(velocity)
 
     def _on_goal_exit(self, force_stop: bool) -> None:
-        """Reset state on goal exit; mirrors onGoalExit()."""
+        """Reset state on goal exit."""
         if self._params.publish_zero_velocity or force_stop:
             self._publish_zero_velocity()
         for controller in self._controllers.values():
             controller.reset()
 
     def _is_goal_reached(self) -> bool:
-        """Check if the goal is reached; mirrors isGoalReached()."""
+        """Check if the goal is reached."""
         pose = self._get_robot_pose()
         if pose is None:
             return False
@@ -728,7 +728,7 @@ class ControllerServer(LifecycleNode):
             pose.pose, self._transformed_end_pose.pose, velocity, self._transformed_global_plan)
 
     def _get_robot_pose(self) -> Optional[PoseStamped]:
-        """Obtain the current robot pose in the costmap frame; mirrors getRobotPose()."""
+        """Obtain the current robot pose in the costmap frame."""
         if self._costmap_ros is None:
             return None
         return self._costmap_ros.get_robot_pose()

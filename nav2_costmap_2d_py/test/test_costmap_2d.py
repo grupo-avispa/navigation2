@@ -180,9 +180,17 @@ class TestCostmap2D(unittest.TestCase):
         # A point well outside is untouched
         self.assertEqual(self.map.get_cost(9, 9), FREE_SPACE)
 
+    def test_set_convex_polygon_cost_out_of_bounds(self) -> None:
+        """A polygon with a vertex outside the map is rejected and fills nothing."""
+        polygon = [(2.0, 2.0), (7.0, 2.0), (7.0, 7.0), (-5.0, 7.0)]
+        self.assertFalse(self.map.set_convex_polygon_cost(polygon, LETHAL_OBSTACLE))
+        self.assertEqual(self.map.get_cost(4, 4), FREE_SPACE)
+
     def test_set_convex_polygon_cost_degenerate(self) -> None:
-        """A polygon with fewer than three points is rejected."""
-        self.assertFalse(self.map.set_convex_polygon_cost([(0.0, 0.0)], LETHAL_OBSTACLE))
+        """A sub-triangle polygon that is in-bounds succeeds but fills nothing (matches C++)."""
+        before = bytes(self.map.get_char_map())
+        self.assertTrue(self.map.set_convex_polygon_cost([(0.0, 0.0)], LETHAL_OBSTACLE))
+        self.assertEqual(bytes(self.map.get_char_map()), before)
 
     def test_footprint_cost(self) -> None:
         """footprint_cost returns the maximum cost under the footprint."""

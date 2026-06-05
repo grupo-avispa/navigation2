@@ -15,20 +15,22 @@
 
 """nav2_costmap_2d_py – Python port of nav2_costmap_2d."""
 
-from nav2_costmap_2d_py.costmap_2d_ros import Costmap2DROS
 from nav2_costmap_2d_py.core.cost_values import (
+    CombinationMethod,
     FREE_SPACE,
-    LETHAL_OBSTACLE,
     INSCRIBED_INFLATED_OBSTACLE,
+    LETHAL_OBSTACLE,
+    MAX_NON_OBSTACLE,
     NO_INFORMATION,
-    MAX_NON_LETHAL,
 )
+from nav2_costmap_2d_py.costmap_2d_ros import Costmap2DROS
 
 __all__ = [
     'Costmap2DROS',
+    'CombinationMethod',
     'FREE_SPACE',
     'LETHAL_OBSTACLE',
     'INSCRIBED_INFLATED_OBSTACLE',
     'NO_INFORMATION',
-    'MAX_NON_LETHAL',
+    'MAX_NON_OBSTACLE',
 ]

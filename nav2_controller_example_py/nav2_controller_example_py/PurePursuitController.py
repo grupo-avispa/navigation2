@@ -1,4 +1,5 @@
-# Copyright (c) 2024 nav2_py_pure_pursuit
+# Copyright (c) 2026 Alberto J. Tudela Roldán
+# Copyright (c) 2026 Grupo Avispa, DTE, Universidad de Málaga
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,25 +14,19 @@
 # limitations under the License.
 
 """
-Pure Pursuit controller plugin for nav2_controller_py.
+Regulated Pure Pursuit controller plugin for nav2_controller_py.
 
-Implements the classic Pure Pursuit algorithm:
-  1. Find the lookahead point on the global path.
-  2. Compute curvature to drive the robot toward that point.
-  3. Return a TwistStamped command.
-
-This plugin is intentionally self-contained (no costmap required) so it
-can be used as a starting template for more sophisticated controllers.
+Simplified but robust implementation based on nav2_regulated_pure_pursuit_controller.
 
 Plugin type string (use in YAML):
     FollowPath:
-      plugin: "nav2_py_pure_pursuit/PurePursuitController"
+      plugin: "nav2_controller_example_py.PurePursuitController"
 """
 
 import math
-from typing import Optional
+from typing import Optional, Tuple
 
-from geometry_msgs.msg import PoseStamped, Twist, TwistStamped
+from geometry_msgs.msg import PointStamped, PoseStamped, Twist, TwistStamped
 from nav2_core_py.controller import Controller
 from nav2_core_py.controller_exceptions import InvalidPath, NoValidControl
 from nav_msgs.msg import Path
@@ -39,19 +34,16 @@ from nav_msgs.msg import Path
 
 class PurePursuitController(Controller):
     """
-    Pure Pursuit local controller.
+    Regulated Pure Pursuit local controller.
 
     Parameters (under ``<plugin_id>.`` namespace in YAML):
-      lookahead_dist      (float, default 0.4 m)
-      max_linear_vel      (float, default 0.5 m/s)
-      min_linear_vel      (float, default 0.05 m/s)
-      max_angular_vel     (float, default 1.0 rad/s)
-      transform_tolerance (float, default 0.5 s)  – unused here, kept for parity
-
-    The controller operates in the path frame without a full costmap:
-      - It iterates path poses and picks the first one beyond ``lookahead_dist``.
-      - It computes a curvature command to steer toward that waypoint.
-      - Linear velocity is reduced near the goal (proportional control).
+        lookahead_dist          (float, default 2.0 m)
+        max_linear_vel          (float, default 0.5 m/s)
+        min_linear_vel          (float, default 0.05 m/s)
+        max_angular_vel         (float, default 1.0 rad/s)
+        max_linear_accel        (float, default 2.5 m/s²)
+        max_linear_decel        (float, default 2.5 m/s²)
+        rotation_scaling_factor (float, default 1.0)
     """
 
     def __init__(self):
@@ -59,24 +51,26 @@ class PurePursuitController(Controller):
         self._name = ''
 
         # Parameters
-        self._lookahead_dist = 0.4
+        self._lookahead_dist = 2.0
         self._max_linear_vel = 0.5
         self._min_linear_vel = 0.05
         self._max_angular_vel = 1.0
-        self._transform_tolerance = 0.5
+        self._max_linear_accel = 2.5
+        self._max_linear_decel = 2.5
+        self._rotation_scaling_factor = 1.0
 
-        # Speed limit (set via set_speed_limit)
-        self._speed_limit = 1.0        # fraction of max (1.0 = unlimited)
+        # Speed limit
+        self._speed_limit = 1.0
         self._speed_limit_absolute = False
 
-        # Current path
+        # State
         self._path: Optional[Path] = None
-        self._path_index: int = 0
         self._cancelled: bool = False
+        self._last_linear_vel = 0.0
 
-    # ------------------------------------------------------------------
-    # ControllerBase interface
-    # ------------------------------------------------------------------
+        # Publishers
+        self._target_pub = None
+        self._path_pub = None
 
     def configure(self, node, name: str, tf_buffer, costmap_ros) -> None:
         self._node = node
@@ -88,17 +82,22 @@ class PurePursuitController(Controller):
                 node.declare_parameter(full, default)
             return node.get_parameter(full).value
 
-        self._lookahead_dist = _p('lookahead_dist', 0.4)
+        self._lookahead_dist = _p('lookahead_dist', 2.0)
         self._max_linear_vel = _p('max_linear_vel', 0.5)
         self._min_linear_vel = _p('min_linear_vel', 0.05)
         self._max_angular_vel = _p('max_angular_vel', 1.0)
-        self._transform_tolerance = _p('transform_tolerance', 0.5)
+        self._max_linear_accel = _p('max_linear_accel', 2.5)
+        self._max_linear_decel = _p('max_linear_decel', 2.5)
+        self._rotation_scaling_factor = _p('rotation_scaling_factor', 1.0)
+
+        # Publishers
+        self._target_pub = node.create_publisher(PointStamped, f'{name}/target_point', 10)
+        self._path_pub = node.create_publisher(Path, f'{name}/local_plan', 10)
 
         node.get_logger().info(
-            f'[PurePursuitController] "{name}" configured: '
-            f'lookahead={self._lookahead_dist:.2f} m  '
-            f'v=[{self._min_linear_vel:.2f}, {self._max_linear_vel:.2f}] m/s  '
-            f'w_max={self._max_angular_vel:.2f} rad/s'
+            f'[RegulatedPurePursuitController] "{name}" configured: '
+            f'lookahead={self._lookahead_dist:.1f}m '
+            f'v=[{self._min_linear_vel:.2f}, {self._max_linear_vel:.2f}]m/s'
         )
 
     def cleanup(self) -> None:
@@ -106,28 +105,23 @@ class PurePursuitController(Controller):
 
     def activate(self) -> None:
         self._node.get_logger().info(
-            f'[PurePursuitController] "{self._name}" activated')
+            f'[RegulatedPurePursuitController] "{self._name}" activated')
         self._cancelled = False
+        self._last_linear_vel = 0.0
 
     def deactivate(self) -> None:
         self._node.get_logger().info(
-            f'[PurePursuitController] "{self._name}" deactivated')
+            f'[RegulatedPurePursuitController] "{self._name}" deactivated')
 
     def new_path_received(self, path: Path) -> None:
-        """Store the new global path and reset the path index."""
         if not path.poses:
             raise InvalidPath('Received an empty path.')
         self._path = path
-        self._path_index = 0
-        self._node.get_logger().debug(
-            f'[PurePursuitController] "{self._name}" received path '
-            f'with {len(path.poses)} poses.'
-        )
 
     def reset(self) -> None:
         self._path = None
-        self._path_index = 0
         self._cancelled = False
+        self._last_linear_vel = 0.0
 
     def cancel(self) -> bool:
         self._cancelled = True
@@ -140,10 +134,6 @@ class PurePursuitController(Controller):
         else:
             self._speed_limit = speed_limit
             self._speed_limit_absolute = True
-        self._node.get_logger().info(
-            f'[PurePursuitController] "{self._name}" speed limit set to '
-            f'{speed_limit} ({"%" if percentage else "m/s"})'
-        )
 
     def compute_velocity_commands(
         self,
@@ -153,151 +143,218 @@ class PurePursuitController(Controller):
         transformed_global_plan: Path,
         goal_pose: PoseStamped,
     ) -> TwistStamped:
-        """
-        Compute Pure Pursuit velocity commands.
-
-        Parameters
-        ----------
-        pose : PoseStamped
-            Current robot pose (in global frame).
-        velocity : Twist
-            Current (thresholded) robot velocity.
-        goal_checker : GoalCheckerBase
-            Active goal checker (not used here directly).
-        transformed_global_plan : Path
-            Global plan already transformed to local frame (or raw if no TF).
-        goal_pose : PoseStamped
-            Goal pose (last pose in path).
-
-        Returns
-        -------
-        TwistStamped
-            Velocity command.
-
-        Raises
-        ------
-        NoValidControl
-            If no lookahead point can be found.
-
-        """
+        """Compute regulated pure pursuit velocity commands."""
         if self._cancelled:
             cmd = TwistStamped()
             cmd.header.stamp = self._node.get_clock().now().to_msg()
+            cmd.header.frame_id = 'base_link'
             return cmd
 
-        plan = transformed_global_plan if transformed_global_plan.poses \
-            else self._path
+        plan = transformed_global_plan if transformed_global_plan.poses else self._path
 
         if plan is None or not plan.poses:
+            raise NoValidControl('[RegulatedPurePursuitController] No path available.')
+
+        # Get lookahead point using path distance
+        try:
+            lookahead_pose = self._get_lookahead_point(
+                plan,
+                pose.pose.position.x,
+                pose.pose.position.y
+            )
+        except Exception:
             raise NoValidControl(
-                f'[PurePursuitController] "{self._name}": no path available.'
+                '[RegulatedPurePursuitController] Could not find lookahead point.'
             )
 
-        # Robot position (use path frame; in pure Python we assume poses
-        # are already expressed relative to robot if no TF is provided).
-        rx = pose.pose.position.x
-        ry = pose.pose.position.y
-        robot_yaw = self._yaw_from_pose(pose.pose)
+        # Publish target
+        if self._target_pub:
+            target_msg = PointStamped()
+            target_msg.header = plan.header
+            target_msg.point.x = lookahead_pose.pose.position.x
+            target_msg.point.y = lookahead_pose.pose.position.y
+            target_msg.point.z = 0.01
+            self._target_pub.publish(target_msg)
 
-        # Find lookahead point
-        lookahead_pose = self._find_lookahead_point(plan, rx, ry)
-        if lookahead_pose is None:
-            # All path points are behind us or path is exhausted → head to goal
-            lookahead_pose = plan.poses[-1]
+        # Transform to robot frame
+        lx, ly = self._transform_to_robot_frame(pose, lookahead_pose)
+        dist = math.sqrt(lx ** 2 + ly ** 2)
 
-        lx = lookahead_pose.pose.position.x
-        ly = lookahead_pose.pose.position.y
+        if dist < 0.01:
+            raise NoValidControl(
+                '[RegulatedPurePursuitController] Lookahead point too close.')
 
-        # Transform lookahead point to robot frame
-        dx = lx - rx
-        dy = ly - ry
+        # Calculate curvature
+        curvature = self._calculate_curvature(lx, ly, dist)
+
+        # Distance to goal
+        goal_x = plan.poses[-1].pose.position.x
+        goal_y = plan.poses[-1].pose.position.y
         dist_to_goal = math.sqrt(
-            (plan.poses[-1].pose.position.x - rx) ** 2
-            + (plan.poses[-1].pose.position.y - ry) ** 2
+            (goal_x - pose.pose.position.x) ** 2 +
+            (goal_y - pose.pose.position.y) ** 2
         )
 
-        # Lookahead in robot frame
-        lx_robot = math.cos(-robot_yaw) * dx - math.sin(-robot_yaw) * dy
-        ly_robot = math.sin(-robot_yaw) * dx + math.cos(-robot_yaw) * dy
+        # Regulation: reduce velocity based on path curvature and distance to goal
+        linear_vel = self._regulate_velocity(curvature, dist_to_goal, velocity.linear.x)
 
-        dist = math.sqrt(lx_robot ** 2 + ly_robot ** 2)
-        if dist < 1e-6:
-            raise NoValidControl(
-                f'[PurePursuitController] "{self._name}": '
-                f'lookahead point too close (dist={dist:.4f}).'
-            )
+        # Angular velocity from curvature
+        angular_vel = curvature * linear_vel
+        angular_vel = max(-self._max_angular_vel, min(self._max_angular_vel, angular_vel))
 
-        # Pure Pursuit curvature: κ = 2·ly / dist²
-        curvature = 2.0 * ly_robot / (dist ** 2)
+        # Build command
+        cmd = TwistStamped()
+        cmd.header.stamp = self._node.get_clock().now().to_msg()
+        cmd.header.frame_id = 'base_link'
+        cmd.twist.linear.x = linear_vel
+        cmd.twist.angular.z = angular_vel
 
-        # Effective max velocity (honour speed limit)
+        self._last_linear_vel = linear_vel
+
+        # Publish trajectory from robot to target
+        path_to_target = self._create_path_to_target(pose, lookahead_pose, plan.header.frame_id)
+        if self._path_pub:
+            self._path_pub.publish(path_to_target)
+
+        return cmd
+
+    def _get_lookahead_point(self, path: Path, rx: float, ry: float) -> PoseStamped:
+        """Find lookahead point by walking path distance (not euclidean)."""
+        poses = path.poses
+        n = len(poses)
+
+        if n == 0:
+            raise ValueError('Empty path')
+
+        # Find closest point
+        closest_idx = 0
+        min_dist = float('inf')
+        for i in range(n):
+            p = poses[i]
+            d = math.sqrt((p.pose.position.x - rx) ** 2 + (p.pose.position.y - ry) ** 2)
+            if d < min_dist:
+                min_dist = d
+                closest_idx = i
+
+        # Walk forward accumulating distance
+        path_dist = 0.0
+        for i in range(closest_idx, n - 1):
+            p1 = poses[i]
+            p2 = poses[i + 1]
+
+            dx = p2.pose.position.x - p1.pose.position.x
+            dy = p2.pose.position.y - p1.pose.position.y
+            seg_len = math.sqrt(dx ** 2 + dy ** 2)
+
+            if seg_len == 0:
+                continue
+
+            if path_dist + seg_len >= self._lookahead_dist:
+                # Interpolate within segment
+                remaining = self._lookahead_dist - path_dist
+                t = remaining / seg_len
+                t = max(0.0, min(1.0, t))
+
+                pose = PoseStamped()
+                pose.header = p1.header
+                pose.pose.position.x = p1.pose.position.x + t * dx
+                pose.pose.position.y = p1.pose.position.y + t * dy
+                pose.pose.orientation = p1.pose.orientation
+                return pose
+
+            path_dist += seg_len
+
+        # Return last pose if lookahead distance exceeds path
+        return poses[-1]
+
+    @staticmethod
+    def _transform_to_robot_frame(pose: PoseStamped, target: PoseStamped) -> Tuple[float, float]:
+        """Transform point to robot frame."""
+        dx = target.pose.position.x - pose.pose.position.x
+        dy = target.pose.position.y - pose.pose.position.y
+
+        # Get robot yaw
+        q = pose.pose.orientation
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        robot_yaw = math.atan2(siny_cosp, cosy_cosp)
+
+        # Rotate to robot frame
+        lx = math.cos(-robot_yaw) * dx - math.sin(-robot_yaw) * dy
+        ly = math.sin(-robot_yaw) * dx + math.cos(-robot_yaw) * dy
+
+        return lx, ly
+
+    def _calculate_curvature(self, lx: float, ly: float, dist: float) -> float:
+        """Calculate pure pursuit curvature: κ = 2*ly/dist²."""
+        if dist < 0.001:
+            return 0.0
+        return 2.0 * ly / (dist ** 2)
+
+    def _create_path_to_target(
+        self,
+        pose: PoseStamped,
+        target: PoseStamped,
+        frame_id: str
+    ) -> Path:
+        """Create a path from robot to target with interpolated points."""
+        path = Path()
+        path.header.frame_id = frame_id
+        path.header.stamp = self._node.get_clock().now().to_msg()
+
+        robot_x = pose.pose.position.x
+        robot_y = pose.pose.position.y
+        target_x = target.pose.position.x
+        target_y = target.pose.position.y
+
+        # Create 20 interpolated points from robot to target
+        num_points = 20
+        for i in range(num_points + 1):
+            t = i / num_points
+
+            point_pose = PoseStamped()
+            point_pose.header = pose.header
+            point_pose.pose.position.x = robot_x + t * (target_x - robot_x)
+            point_pose.pose.position.y = robot_y + t * (target_y - robot_y)
+            point_pose.pose.orientation = pose.pose.orientation
+
+            path.poses.append(point_pose)
+
+        return path
+
+    def _regulate_velocity(
+        self,
+        curvature: float,
+        dist_to_goal: float,
+        current_vel: float
+    ) -> float:
+        """Regulate velocity based on curvature and distance to goal."""
+        # Apply speed limit
         v_max = self._max_linear_vel
         if self._speed_limit_absolute:
             v_max = min(v_max, self._speed_limit)
         else:
             v_max = v_max * self._speed_limit
 
-        # Reduce speed near goal (proportional)
-        v_linear = v_max * min(1.0, dist_to_goal /
-                               (self._lookahead_dist * 3.0))
+        # Reduce speed near high curvature
+        curvature_factor = 1.0 / (1.0 + abs(curvature) * self._rotation_scaling_factor)
+        v_max *= curvature_factor
+
+        # Reduce speed near goal
+        if dist_to_goal < self._lookahead_dist * 2.0:
+            v_max *= dist_to_goal / (self._lookahead_dist * 2.0)
+
+        v_linear = v_max
         v_linear = max(self._min_linear_vel, v_linear)
 
-        # Angular velocity from curvature
-        v_angular = curvature * v_linear
-        v_angular = max(-self._max_angular_vel,
-                        min(self._max_angular_vel, v_angular))
+        # Apply acceleration constraints
+        dt = 0.1  # Assume ~10Hz control rate
+        max_accel = self._max_linear_accel * dt
+        max_decel = self._max_linear_decel * dt
 
-        cmd = TwistStamped()
-        cmd.header.stamp = self._node.get_clock().now().to_msg()
-        cmd.header.frame_id = 'base_link'
-        cmd.twist.linear.x = v_linear
-        cmd.twist.angular.z = v_angular
+        if v_linear > current_vel + max_accel:
+            v_linear = current_vel + max_accel
+        elif v_linear < current_vel - max_decel:
+            v_linear = current_vel - max_decel
 
-        self._node.get_logger().debug(
-            f'[PurePursuitController] "{self._name}": '
-            f'v={v_linear:.3f} m/s  w={v_angular:.3f} rad/s  '
-            f'd_goal={dist_to_goal:.3f} m  κ={curvature:.4f}'
-        )
-
-        return cmd
-
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
-
-    def _find_lookahead_point(
-        self,
-        path: Path,
-        rx: float,
-        ry: float,
-    ) -> Optional[PoseStamped]:
-        """
-        Return the first path pose at distance >= lookahead_dist from (rx, ry).
-
-        Advances ``_path_index`` so we prune already-passed points.
-        """
-        poses = path.poses
-        n = len(poses)
-        if n == 0:
-            return None
-
-        # Advance index past poses that are closer than lookahead
-        while self._path_index < n - 1:
-            p = poses[self._path_index]
-            d = math.sqrt(
-                (p.pose.position.x - rx) ** 2
-                + (p.pose.position.y - ry) ** 2
-            )
-            if d >= self._lookahead_dist:
-                break
-            self._path_index += 1
-
-        return poses[self._path_index]
-
-    @staticmethod
-    def _yaw_from_pose(pose) -> float:
-        """Extract yaw from a geometry_msgs.msg.Pose."""
-        q = pose.orientation
-        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
-        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-        return math.atan2(siny_cosp, cosy_cosp)
+        return v_linear

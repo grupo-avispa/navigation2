@@ -25,6 +25,8 @@ from typing import Any, List, Optional
 
 from map_msgs.msg import OccupancyGridUpdate
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
+from nav2_msgs.msg import Costmap, CostmapUpdate
+from nav2_msgs.srv import GetCostmap
 from nav_msgs.msg import OccupancyGrid
 import numpy as np
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
@@ -116,6 +118,17 @@ class Costmap2DPublisher:
         self._costmap_update_pub = node.create_publisher(
             OccupancyGridUpdate, topic_name + '_updates', latched_qos
         )
+        # Raw costmap publishers (nav2_msgs/Costmap, untranslated cost values)
+        self._costmap_raw_pub = node.create_publisher(
+            Costmap, topic_name + '_raw', latched_qos
+        )
+        self._costmap_raw_update_pub = node.create_publisher(
+            CostmapUpdate, topic_name + '_raw_updates', latched_qos
+        )
+        # Service to fetch the full costmap on demand.
+        self._costmap_service = node.create_service(
+            GetCostmap, 'get_' + topic_name, self.costmap_service_callback
+        )
 
     # ------------------------------------------------------------------
     # Cost translation (class-level LUT, built once at class definition)
@@ -185,6 +198,14 @@ class Costmap2DPublisher:
         self._y0 = min(y0, self._y0)
         self._yn = max(yn, self._yn)
 
+    def on_configure(self) -> None:
+        """Configure the publisher (no-op, kept for parity with the C++ API)."""
+        pass
+
+    def on_cleanup(self) -> None:
+        """Cleanup the publisher (no-op, kept for parity with the C++ API)."""
+        pass
+
     def on_activate(self) -> None:
         """Activate the publisher so subsequent calls publish data."""
         self._active = True
@@ -227,9 +248,11 @@ class Costmap2DPublisher:
 
             if send_full:
                 self._publish_full(costmap)
+                self._publish_full_raw(costmap)
             elif self._x0 < self._xn:
                 # Publish just the dirty window accumulated via update_bounds.
                 self._publish_update(costmap)
+                self._publish_update_raw(costmap)
 
             self._saved_origin_x = current_origin_x
             self._saved_origin_y = current_origin_y
@@ -299,3 +322,96 @@ class Costmap2DPublisher:
                 self._COST_TRANSLATION_TABLE_NP[grid[src:src + width]]
         msg.data = out.tolist()
         self._costmap_update_pub.publish(msg)
+
+    def _publish_full_raw(self, costmap: Costmap2D) -> None:
+        """
+        Publish the full raw costmap as a ``nav2_msgs/msg/Costmap`` message.
+
+        Parameters
+        ----------
+        costmap : Costmap2D
+            The costmap whose raw (untranslated) contents are published.
+
+        """
+        msg = Costmap()
+        now = self._node.get_clock().now().to_msg()
+        msg.header.stamp = now
+        msg.header.frame_id = self._global_frame
+        msg.metadata.layer = 'master'
+        msg.metadata.resolution = costmap.resolution
+        msg.metadata.size_x = costmap.size_x
+        msg.metadata.size_y = costmap.size_y
+        msg.metadata.origin.position.x = costmap.origin_x
+        msg.metadata.origin.position.y = costmap.origin_y
+        msg.metadata.origin.position.z = 0.0
+        msg.metadata.origin.orientation.w = 1.0
+        msg.data = list(costmap.get_char_map())
+        self._costmap_raw_pub.publish(msg)
+
+    def _publish_update_raw(self, costmap: Costmap2D) -> None:
+        """
+        Publish a raw ``nav2_msgs/msg/CostmapUpdate`` over the dirty window.
+
+        Parameters
+        ----------
+        costmap : Costmap2D
+            The costmap whose dirty window is published as a raw update.
+
+        """
+        x0, y0, xn, yn = self._x0, self._y0, self._xn, self._yn
+        width = xn - x0
+        height = yn - y0
+
+        msg = CostmapUpdate()
+        msg.header.stamp = self._node.get_clock().now().to_msg()
+        msg.header.frame_id = self._global_frame
+        msg.x = x0
+        msg.y = y0
+        msg.size_x = width
+        msg.size_y = height
+
+        grid = np.frombuffer(costmap.get_char_map(), dtype=np.uint8)
+        map_width = costmap.size_x
+        out = np.empty(width * height, dtype=np.uint8)
+        for row in range(height):
+            src = (y0 + row) * map_width + x0
+            out[row * width:(row + 1) * width] = grid[src:src + width]
+        msg.data = out.tolist()
+        self._costmap_raw_update_pub.publish(msg)
+
+    def costmap_service_callback(
+        self, request: GetCostmap.Request, response: GetCostmap.Response
+    ) -> GetCostmap.Response:
+        """
+        Service callback returning the full raw costmap.
+
+        Parameters
+        ----------
+        request : GetCostmap.Request
+            The (unused) service request.
+        response : GetCostmap.Response
+            The response to fill with the current costmap.
+
+        Returns
+        -------
+        GetCostmap.Response
+            The filled service response.
+
+        """
+        costmap = self._costmap
+        with costmap.get_mutex():
+            now = self._node.get_clock().now().to_msg()
+            response.map.header.stamp = now
+            response.map.header.frame_id = self._global_frame
+            response.map.metadata.size_x = costmap.size_x
+            response.map.metadata.size_y = costmap.size_y
+            response.map.metadata.resolution = costmap.resolution
+            response.map.metadata.layer = 'master'
+            response.map.metadata.map_load_time = now
+            response.map.metadata.update_time = now
+            response.map.metadata.origin.position.x = costmap.origin_x
+            response.map.metadata.origin.position.y = costmap.origin_y
+            response.map.metadata.origin.position.z = 0.0
+            response.map.metadata.origin.orientation.w = 1.0
+            response.map.data = list(costmap.get_char_map())
+        return response

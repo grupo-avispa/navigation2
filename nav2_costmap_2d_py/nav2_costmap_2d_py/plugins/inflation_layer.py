@@ -26,7 +26,8 @@ Plugin type string:
 """
 
 import math
-from typing import List
+import threading
+from typing import Any, List
 
 from nav2_costmap_2d_py.core.cost_values import (
     FREE_SPACE,
@@ -35,12 +36,12 @@ from nav2_costmap_2d_py.core.cost_values import (
     NO_INFORMATION,
 )
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
-from nav2_costmap_2d_py.core.layer import Layer
+from nav2_costmap_2d_py.plugins.inflation_layer_interface import InflationLayerInterface
 import numpy as np
 from scipy import ndimage
 
 
-class InflationLayer(Layer):
+class InflationLayer(InflationLayerInterface):
     """
     Convolve the costmap by the robot's radius or footprint to inflate obstacles.
 
@@ -52,6 +53,7 @@ class InflationLayer(Layer):
     def __init__(self) -> None:
         """Initialize inflation layer defaults."""
         super().__init__()
+        self._access = threading.RLock()
         self._inflation_radius = 0.55
         self._cost_scaling_factor = 10.0
         self._inflate_unknown = False
@@ -300,3 +302,61 @@ class InflationLayer(Layer):
         result[promote] = cost[promote]
         result[take_max] = np.maximum(old[take_max], cost[take_max])
         grid[win] = result.astype(np.uint8)
+
+    # ------------------------------------------------------------------
+    # InflationLayerInterface implementation
+    # ------------------------------------------------------------------
+
+    def activate(self) -> None:
+        """Activate the layer."""
+        pass
+
+    def deactivate(self) -> None:
+        """Deactivate the layer."""
+        pass
+
+    def match_size(self) -> None:
+        """Match the size of the master costmap and recompute the caches."""
+        costmap = self._layered_costmap.get_costmap()
+        self._resolution = costmap.resolution
+        self._cell_inflation_radius = self.cell_distance(self._inflation_radius)
+        self.compute_caches()
+        self._need_reinflation = True
+
+    def is_clearable(self) -> bool:
+        """Return whether clearing operations should be processed on this layer."""
+        return False
+
+    def get_cost_scaling_factor(self) -> float:
+        """Return the cost scaling factor."""
+        return self._cost_scaling_factor
+
+    def get_inflation_radius(self) -> float:
+        """Return the inflation radius in meters."""
+        return self._inflation_radius
+
+    def get_mutex(self) -> Any:
+        """Return the mutex guarding the inflation information."""
+        return self._access
+
+    def cell_distance(self, world_dist: float) -> int:
+        """
+        Convert a world distance to a cell distance via the master costmap.
+
+        Parameters
+        ----------
+        world_dist : float
+            The world distance, in metres.
+
+        Returns
+        -------
+        int
+            The equivalent cell distance.
+
+        """
+        return self._layered_costmap.get_costmap().cell_distance(world_dist)
+
+    def compute_caches(self) -> None:
+        """Generate the cell inflation radius from the current resolution."""
+        if self._cell_inflation_radius == 0:
+            self._inscribed_radius = self._layered_costmap.inscribed_radius

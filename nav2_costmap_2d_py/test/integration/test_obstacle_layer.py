@@ -16,21 +16,23 @@
 """
 Unit tests for the ObstacleLayer.
 
-Inspired by nav2_costmap_2d/test/unit/obstacle_layer_test.cpp: laser
-observations are marked as lethal obstacles in the layer's own grid (during
-``update_bounds``) and then combined into the master grid (during
-``update_costs``); raytracing clears free space and footprint clearing happens
-*after* marking.
+Mirrors nav2_costmap_2d/test/integration/obstacle_tests.cpp: static
+observations (origin + PointCloud2) are marked as lethal obstacles in the
+layer's own grid during ``update_bounds`` and combined into the master grid
+during ``update_costs``; raytracing clears free space and footprint clearing
+happens *after* marking.
 """
 
 import unittest
 
 from nav2_costmap_2d_py.core.cost_values import FREE_SPACE, LETHAL_OBSTACLE
 from nav2_costmap_2d_py.core.layered_costmap import LayeredCostmap
+from nav2_costmap_2d_py.core.observation import Observation
 from nav2_costmap_2d_py.plugins.obstacle_layer import ObstacleLayer
-
 import rclpy
 from rclpy.node import Node
+from sensor_msgs_py import point_cloud2
+from std_msgs.msg import Header
 
 _INF = float('inf')
 
@@ -38,6 +40,22 @@ _INF = float('inf')
 def _bounds():
     """Return fresh (min_x, min_y, max_x, max_y) single-element bound lists."""
     return [_INF], [_INF], [-_INF], [-_INF]
+
+
+def _make_observation(origin, points, obstacle_max_range=100.0,
+                      obstacle_min_range=0.0, raytrace_max_range=100.0,
+                      raytrace_min_range=0.0):
+    """Build a static Observation already expressed in the global frame."""
+    obs = Observation()
+    obs.origin.x, obs.origin.y, obs.origin.z = origin
+    header = Header()
+    header.frame_id = 'map'
+    obs.cloud = point_cloud2.create_cloud_xyz32(header, points)
+    obs.obstacle_max_range = obstacle_max_range
+    obs.obstacle_min_range = obstacle_min_range
+    obs.raytrace_max_range = raytrace_max_range
+    obs.raytrace_min_range = raytrace_min_range
+    return obs
 
 
 class TestObstacleLayer(unittest.TestCase):
@@ -63,7 +81,6 @@ class TestObstacleLayer(unittest.TestCase):
         self.layer.initialize(self.lc, 'obstacle_layer', None, self.node)
         self.lc.add_plugin(self.layer)
         self.lc.resize_map(10, 10, 1.0, 0.0, 0.0)
-        self.obs = self.layer._observations[0]
 
     def tearDown(self) -> None:
         """Destroy the test node."""
@@ -76,8 +93,8 @@ class TestObstacleLayer(unittest.TestCase):
     def test_marking_into_master(self) -> None:
         """A buffered return is marked lethal in the layer and combined into the master."""
         master = self.lc.get_costmap()
-        self.obs.origin = (5.5, 5.5)
-        self.obs.points = [(6.5, 5.5)]
+        obs = _make_observation((5.5, 5.5, 0.0), [(6.5, 5.5, 0.0)])
+        self.layer.add_static_observation(obs, marking=True, clearing=True)
 
         min_x, min_y, max_x, max_y = _bounds()
         self.layer.update_bounds(5.5, 5.5, 0.0, min_x, min_y, max_x, max_y)
@@ -90,8 +107,9 @@ class TestObstacleLayer(unittest.TestCase):
     def test_marking_filtered_by_range(self) -> None:
         """A return beyond obstacle_max_range is not marked."""
         master = self.lc.get_costmap()
-        self.obs.origin = (0.5, 0.5)
-        self.obs.points = [(9.5, 9.5)]  # ~12.7 m away, beyond default 2.5 m
+        obs = _make_observation(
+            (0.5, 0.5, 0.0), [(9.5, 9.5, 0.0)], obstacle_max_range=2.5)
+        self.layer.add_static_observation(obs, marking=True, clearing=False)
 
         min_x, min_y, max_x, max_y = _bounds()
         self.layer.update_bounds(0.5, 0.5, 0.0, min_x, min_y, max_x, max_y)
@@ -100,13 +118,9 @@ class TestObstacleLayer(unittest.TestCase):
 
     def test_raytrace_clears_obstacle(self) -> None:
         """A clearing ray frees a previously lethal cell in the layer."""
-        # Pre-mark a lethal cell in the layer's own grid.
         self.layer.set_cost(3, 5, LETHAL_OBSTACLE)
-        # Clearing-only observation whose ray passes through (3, 5).
-        self.obs.marking = False
-        self.obs.clearing = True
-        self.obs.origin = (0.5, 5.5)
-        self.obs.points = [(6.5, 5.5)]
+        obs = _make_observation((0.5, 5.5, 0.0), [(6.5, 5.5, 0.0)])
+        self.layer.add_static_observation(obs, marking=False, clearing=True)
 
         min_x, min_y, max_x, max_y = _bounds()
         self.layer.update_bounds(0.5, 5.5, 0.0, min_x, min_y, max_x, max_y)
@@ -115,11 +129,10 @@ class TestObstacleLayer(unittest.TestCase):
     def test_footprint_clearing_after_marking(self) -> None:
         """Footprint clearing removes an obstacle marked under the robot footprint."""
         master = self.lc.get_costmap()
-        # A square footprint around the robot at (5.5, 5.5).
-        self.lc.set_footprint([(-1.5, -1.5), (1.5, -1.5), (1.5, 1.5), (-1.5, 1.5)])
-        # A return that falls under the footprint.
-        self.obs.origin = (5.5, 5.5)
-        self.obs.points = [(5.5, 5.5)]
+        self.lc.set_footprint(
+            [(-1.5, -1.5), (1.5, -1.5), (1.5, 1.5), (-1.5, 1.5)])
+        obs = _make_observation((5.5, 5.5, 0.0), [(5.5, 5.5, 0.0)])
+        self.layer.add_static_observation(obs, marking=True, clearing=False)
 
         min_x, min_y, max_x, max_y = _bounds()
         self.layer.update_bounds(5.5, 5.5, 0.0, min_x, min_y, max_x, max_y)
@@ -127,14 +140,22 @@ class TestObstacleLayer(unittest.TestCase):
         # The self-mark under the footprint is cleared (C++ clears after marking).
         self.assertEqual(master.get_cost(5, 5), FREE_SPACE)
 
-    def test_reset_clears_observations(self) -> None:
-        """Reset empties the buffered observations and flags a reset."""
-        self.obs.origin = (1.0, 1.0)
-        self.obs.points = [(1.0, 1.0)]
+    def test_reset_clears_grid(self) -> None:
+        """Reset clears the layer's grid and flags a reset."""
+        self.layer.set_cost(2, 2, LETHAL_OBSTACLE)
         self.layer.reset()
-        self.assertIsNone(self.obs.origin)
-        self.assertEqual(self.obs.points, [])
+        self.assertEqual(self.layer.get_cost(2, 2), FREE_SPACE)
         self.assertTrue(self.layer._was_reset)
+
+    def test_clear_static_observations(self) -> None:
+        """Clearing static observations empties the marking/clearing lists."""
+        obs = _make_observation((1.0, 1.0, 0.0), [(1.0, 1.0, 0.0)])
+        self.layer.add_static_observation(obs, marking=True, clearing=True)
+        self.layer.clear_static_observations(marking=True, clearing=True)
+        _, marking = self.layer.get_marking_observations()
+        _, clearing = self.layer.get_clearing_observations()
+        self.assertEqual(marking, [])
+        self.assertEqual(clearing, [])
 
 
 if __name__ == '__main__':

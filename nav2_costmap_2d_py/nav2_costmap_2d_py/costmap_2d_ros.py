@@ -36,6 +36,7 @@ from nav2_costmap_2d_py.core.clear_costmap_service import ClearCostmapService
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
 from nav2_costmap_2d_py.core.costmap_2d_publisher import Costmap2DPublisher
 from nav2_costmap_2d_py.core.costmap_layer import CostmapLayer
+from nav2_costmap_2d_py.core.footprint import to_polygon
 from nav2_costmap_2d_py.core.layered_costmap import (LayeredCostmap, make_footprint_from_radius,
                                                      make_footprint_from_string, pad_footprint,
                                                      transform_footprint)
@@ -729,6 +730,26 @@ class Costmap2DROS(LifecycleNode):
         self._stopped = True
         self._stop_updates = False
 
+    def start(self) -> None:
+        """Start costmap updates (public alias for the C++ ``start``)."""
+        self._start()
+
+    def stop(self) -> None:
+        """Stop costmap updates (public alias for the C++ ``stop``)."""
+        self._stop()
+
+    def pause(self) -> None:
+        """Pause the costmap update loop without deactivating the plugins."""
+        self._stop_updates = True
+
+    def resume(self) -> None:
+        """Resume the costmap update loop after a ``pause``."""
+        self._stop_updates = False
+
+    def update_map(self) -> None:
+        """Run one costmap update step (public alias for the C++ ``updateMap``)."""
+        self._update_map()
+
     # ------------------------------------------------------------------
     # Footprint management
     # ------------------------------------------------------------------
@@ -1181,6 +1202,22 @@ class Costmap2DROS(LifecycleNode):
 
         """
         return self._use_radius
+
+    def get_use_radius(self) -> bool:
+        """Return whether a circular ``robot_radius`` footprint is in use."""
+        return self._use_radius
+
+    def get_robot_footprint(self) -> List[Tuple[float, float]]:
+        """Return the current (padded) robot footprint as a list of points."""
+        return self._padded_footprint
+
+    def get_unpadded_robot_footprint(self) -> List[Tuple[float, float]]:
+        """Return the current unpadded robot footprint as a list of points."""
+        return self._unpadded_footprint
+
+    def get_robot_footprint_polygon(self) -> Polygon:
+        """Return the current (padded) robot footprint as a ``Polygon`` message."""
+        return to_polygon(self._padded_footprint)
 
 
 # ---------------------------------------------------------------------------

@@ -46,6 +46,10 @@ class CostmapLayer(Layer, Costmap2D):
         self._extra_max_x = -1e6
         self._extra_max_y = -1e6
 
+    def is_discretized(self) -> bool:
+        """Return whether the layer is discretized (always True for costmap layers)."""
+        return True
+
     def match_size(self) -> None:
         """Match the size of the master costmap, resizing this layer's internal grid."""
         master = self._layered_costmap.get_costmap()

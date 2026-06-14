@@ -205,7 +205,8 @@ class LayeredCostmap:
                     robot_y
                     - self._combined_costmap.size_y_meters / 2.0
                 )
-                self._combined_costmap.update_origin(new_origin_x, new_origin_y)
+                self._combined_costmap.update_origin(
+                    new_origin_x, new_origin_y)
 
             # ----- Initialise bounding box to "nothing" -----
             _INF = float('inf')
@@ -364,6 +365,30 @@ class LayeredCostmap:
 
         """
         return self._bx0, self._by0, self._bxn, self._byn
+
+    def get_bounds(self) -> Tuple[int, int, int, int]:
+        """
+        Get the bounds of the costmap.
+
+        Returns
+        -------
+        tuple of int
+            ``(x0, xn, y0, yn)`` cell-index bounds of the last update.
+
+        """
+        return self._bx0, self._bxn, self._by0, self._byn
+
+    def is_tracking_unknown(self) -> bool:
+        """Return whether this costmap is tracking unknown space."""
+        return self._combined_costmap.default_value == NO_INFORMATION
+
+    def get_circumscribed_radius(self) -> float:
+        """Return the circumscribed radius of the robot footprint."""
+        return self.circumscribed_radius
+
+    def get_inscribed_radius(self) -> float:
+        """Return the inscribed radius of the robot footprint."""
+        return self.inscribed_radius
 
 
 # ---------------------------------------------------------------------------

@@ -279,6 +279,23 @@ class Layer(ABC):
         """
         return self._name
 
+    def get_full_name(self, param_name: str) -> str:
+        """
+        Return the fully-qualified parameter name for this layer.
+
+        Parameters
+        ----------
+        param_name : str
+            The bare parameter name.
+
+        Returns
+        -------
+        str
+            The parameter name prefixed with the layer name (``"<name>.<param>"``).
+
+        """
+        return f'{self._name}.{param_name}'
+
     def _declare_parameter_if_not_declared(self, param: str, default: Any) -> Any:
         """
         Declare a parameter if it has not been declared yet.

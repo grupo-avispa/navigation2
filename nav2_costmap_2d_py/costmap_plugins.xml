@@ -6,8 +6,23 @@
   <class name="ObstacleLayer" type="nav2_costmap_2d_py.plugins.obstacle_layer.ObstacleLayer" base_class_type="nav2_costmap_2d_py.core.layer.Layer">
     <description>Marks and clears obstacles from laser/pointcloud sensor data.</description>
   </class>
+  <class name="VoxelLayer" type="nav2_costmap_2d_py.plugins.voxel_layer.VoxelLayer" base_class_type="nav2_costmap_2d_py.core.layer.Layer">
+    <description>Populates a 3D voxel grid from laser/pointcloud data and projects it into the 2D costmap.</description>
+  </class>
   <class name="InflationLayer" type="nav2_costmap_2d_py.plugins.inflation_layer.InflationLayer" base_class_type="nav2_costmap_2d_py.core.layer.Layer">
     <description>Inflates obstacle costs outward by a configurable radius.</description>
+  </class>
+  <class name="LegacyInflationLayer" type="nav2_costmap_2d_py.plugins.legacy_inflation_layer.LegacyInflationLayer" base_class_type="nav2_costmap_2d_py.core.layer.Layer">
+    <description>Inflates obstacle costs outward using the legacy BFS-based algorithm.</description>
+  </class>
+  <class name="RangeSensorLayer" type="nav2_costmap_2d_py.plugins.range_sensor_layer.RangeSensorLayer" base_class_type="nav2_costmap_2d_py.core.layer.Layer">
+    <description>Populates the costmap from IR/Sonar range sensors using a probabilistic model.</description>
+  </class>
+  <class name="PluginContainerLayer" type="nav2_costmap_2d_py.plugins.plugin_container_layer.PluginContainerLayer" base_class_type="nav2_costmap_2d_py.core.layer.Layer">
+    <description>Holds a list of plugins and applies them only to this layer.</description>
+  </class>
+  <class name="DenoiseLayer" type="nav2_costmap_2d_py.plugins.denoise_layer.DenoiseLayer" base_class_type="nav2_costmap_2d_py.core.layer.Layer">
+    <description>Filters noise-induced standalone obstacles or small obstacle groups.</description>
   </class>
 
   <!-- ===== Costmap filter plugins ===== -->
@@ -16,5 +31,8 @@
   </class>
   <class name="SpeedFilter" type="nav2_costmap_2d_py.filters.speed_filter.SpeedFilter" base_class_type="nav2_costmap_2d_py.core.layer.Layer">
     <description>Limits robot speed based on a speed-restriction mask.</description>
+  </class>
+  <class name="BinaryFilter" type="nav2_costmap_2d_py.filters.binary_filter.BinaryFilter" base_class_type="nav2_costmap_2d_py.core.layer.Layer">
+    <description>Flips a binary state published as std_msgs/Bool based on a binary mask.</description>
   </class>
 </library>

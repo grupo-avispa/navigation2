@@ -29,6 +29,7 @@ from nav2_costmap_2d_py.core.cost_values import FREE_SPACE, LETHAL_OBSTACLE, NO_
 from nav2_costmap_2d_py.core.costmap_2d import Costmap2D
 from nav2_costmap_2d_py.core.layer import Layer
 from nav_msgs.msg import OccupancyGrid
+from std_srvs.srv import SetBool
 
 # --- filter_values.hpp constants ---------------------------------------------
 KEEPOUT_FILTER = 0
@@ -61,6 +62,7 @@ class CostmapFilter(Layer):
         self._global_frame = ''
         self._filter_info_sub: Any = None
         self._mask_sub: Any = None
+        self._enable_service: Any = None
         # Robot pose buffered in update_bounds, consumed in update_costs.
         self._latest_pose = Pose()
 
@@ -69,14 +71,43 @@ class CostmapFilter(Layer):
     # ------------------------------------------------------------------
 
     def on_initialize(self) -> None:
-        """Read the common filter parameters and subscribe to the filter info topic."""
+        """Read the common filter parameters and create the enable/disable service."""
         self._enabled = self._declare_parameter_if_not_declared('enabled', True)
         self._filter_info_topic = self._declare_parameter_if_not_declared(
             'filter_info_topic', 'costmap_filter_info')
         self._transform_tolerance = self._declare_parameter_if_not_declared(
             'transform_tolerance', 0.1)
         self._global_frame = self._layered_costmap.get_global_frame_id()
+
+        # Costmap filter enabling/disabling service.
+        self._enable_service = self._node.create_service(
+            SetBool, f'{self._name}/toggle_filter', self.enable_callback)
+
         self.initialize_filter(self._filter_info_topic)
+
+    def enable_callback(
+        self, request: SetBool.Request, response: SetBool.Response
+    ) -> SetBool.Response:
+        """
+        Enable/disable the costmap filter via a ``std_srvs/SetBool`` service.
+
+        Parameters
+        ----------
+        request : SetBool.Request
+            The request whose ``data`` field toggles the filter.
+        response : SetBool.Response
+            The response, filled with the success flag and a status message.
+
+        Returns
+        -------
+        SetBool.Response
+            ``success`` is True; ``message`` is ``"Enabled"`` or ``"Disabled"``.
+
+        """
+        self._enabled = request.data
+        response.success = True
+        response.message = 'Enabled' if self._enabled else 'Disabled'
+        return response
 
     def update_bounds(
         self,

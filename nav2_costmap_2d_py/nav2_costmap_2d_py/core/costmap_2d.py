@@ -20,11 +20,26 @@ Pure-Python 2D costmap grid.
 It mirrors the nav2_costmap_2d::Costmap2D from the C++ implementation.
 """
 
+from dataclasses import dataclass
 import math
 import threading
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
-from nav2_costmap_2d_py.core.cost_values import FREE_SPACE
+from nav2_costmap_2d_py.core.cost_values import FREE_SPACE, LETHAL_OBSTACLE, NO_INFORMATION
+
+# OccupancyGrid value constants (mirror nav2_util/occ_grid_values.hpp).
+OCC_GRID_UNKNOWN = -1
+OCC_GRID_FREE = 0
+OCC_GRID_OCCUPIED = 100
+
+
+@dataclass
+class MapLocation:
+    """Convenient holder for x/y cell coordinates with the cost at that cell."""
+
+    x: int = 0
+    y: int = 0
+    cost: int = 0
 
 
 def _sign(x: int) -> int:
@@ -249,6 +264,53 @@ class Costmap2D:
         wy = self._origin_y + (my + 0.5) * self._resolution
         return wx, wy
 
+    def map_to_world_no_bounds(self, mx: int, my: int) -> Tuple[float, float]:
+        """
+        Convert from map coordinates to world coordinates with no bounds checking.
+
+        Parameters
+        ----------
+        mx : int
+            The x map coordinate (may be out of bounds / negative).
+        my : int
+            The y map coordinate (may be out of bounds / negative).
+
+        Returns
+        -------
+        (wx, wy)
+            The associated world coordinates (cell centre).
+
+        """
+        wx = self._origin_x + (mx + 0.5) * self._resolution
+        wy = self._origin_y + (my + 0.5) * self._resolution
+        return wx, wy
+
+    def world_to_map_continuous(self, wx: float, wy: float) -> Tuple[bool, float, float]:
+        """
+        Convert from world coordinates to continuous (float) map coordinates.
+
+        Parameters
+        ----------
+        wx : float
+            The x world coordinate.
+        wy : float
+            The y world coordinate.
+
+        Returns
+        -------
+        (ok, mx, my)
+            ``ok`` is True if the conversion was successful (legal bounds);
+            ``mx``/``my`` are the associated continuous map coordinates.
+
+        """
+        if wx < self._origin_x or wy < self._origin_y:
+            return False, 0.0, 0.0
+        mx = (wx - self._origin_x) / self._resolution
+        my = (wy - self._origin_y) / self._resolution
+        if mx < self._size_x and my < self._size_y:
+            return True, mx, my
+        return False, 0.0, 0.0
+
     # ------------------------------------------------------------------
     # Index helpers
     # ------------------------------------------------------------------
@@ -313,15 +375,15 @@ class Costmap2D:
     # Cell access
     # ------------------------------------------------------------------
 
-    def get_cost(self, mx: int, my: int) -> int:
+    def get_cost(self, mx: int, my: Optional[int] = None) -> int:
         """
         Get the cost of a cell in the costmap.
 
         Parameters
         ----------
         mx : int
-            The x coordinate of the cell.
-        my : int
+            The x coordinate of the cell, or the flat index if ``my`` is None.
+        my : int, optional
             The y coordinate of the cell.
 
         Returns
@@ -330,6 +392,8 @@ class Costmap2D:
             The cost of the cell.
 
         """
+        if my is None:
+            return self._costmap[mx]
         return self._costmap[self.get_index(mx, my)]
 
     def set_cost(self, mx: int, my: int, cost: int) -> None:
@@ -562,9 +626,108 @@ class Costmap2D:
             Upper x/y boundary of the region to reset, in cells.
 
         """
-        for y in range(y0, yn):
-            for x in range(x0, xn):
-                self._costmap[self.get_index(x, y)] = self._default_value
+        self.reset_map_to_value(x0, y0, xn, yn, self._default_value)
+
+    def reset_map_to_value(
+        self, x0: int, y0: int, xn: int, yn: int, value: int
+    ) -> None:
+        """
+        Reset the costmap within the given bounds to a specific value.
+
+        Parameters
+        ----------
+        x0, y0 : int
+            Lower x/y boundary of the region to reset, in cells.
+        xn, yn : int
+            Upper x/y boundary of the region to reset, in cells.
+        value : int
+            The value to set the cells to.
+
+        """
+        with self._mutex:
+            len_x = xn - x0
+            for y in range(y0, yn):
+                start = self.get_index(x0, y)
+                self._costmap[start:start + len_x] = bytes([value]) * len_x
+
+    def delete_maps(self) -> None:
+        """Delete the costmap data structure (frees the underlying buffer)."""
+        with self._mutex:
+            self._costmap = bytearray()
+
+    def save_map(self, file_name: str) -> bool:
+        """
+        Save the costmap out to a PGM (P2) file.
+
+        Parameters
+        ----------
+        file_name : str
+            The name of the file to save.
+
+        Returns
+        -------
+        bool
+            True on success, False if the file could not be opened.
+
+        """
+        try:
+            with open(file_name, 'w') as fp:
+                fp.write(f'P2\n{self._size_x}\n{self._size_y}\n{0xff}\n')
+                for iy in range(self._size_y):
+                    row = ' '.join(
+                        str(self.get_cost(ix, iy)) for ix in range(self._size_x))
+                    fp.write(row + ' \n')
+        except OSError:
+            return False
+        return True
+
+    def copy_costmap_window(
+        self,
+        source: 'Costmap2D',
+        win_origin_x: float, win_origin_y: float,
+        win_size_x: float, win_size_y: float,
+    ) -> bool:
+        """
+        Turn this costmap into a copy of a window of another costmap.
+
+        Parameters
+        ----------
+        source : Costmap2D
+            The costmap to copy a window from.
+        win_origin_x, win_origin_y : float
+            The lower-left corner of the window to copy, in world coordinates.
+        win_size_x, win_size_y : float
+            The size of the window, in metres.
+
+        Returns
+        -------
+        bool
+            True if the copy succeeded, False otherwise.
+
+        """
+        if source is self:
+            return False
+
+        self.delete_maps()
+
+        ok0, ll_x, ll_y = source.world_to_map(win_origin_x, win_origin_y)
+        ok1, ur_x, ur_y = source.world_to_map(
+            win_origin_x + win_size_x, win_origin_y + win_size_y)
+        if not ok0 or not ok1:
+            return False
+
+        self._resolution = source._resolution
+        self._origin_x = win_origin_x
+        self._origin_y = win_origin_y
+        self._init_maps(ur_x - ll_x, ur_y - ll_y)
+
+        src = source._costmap
+        for row in range(self._size_y):
+            s_off = (ll_y + row) * source._size_x + ll_x
+            d_off = row * self._size_x
+            self._costmap[d_off:d_off + self._size_x] = \
+                src[s_off:s_off + self._size_x]
+        return True
 
     def update_origin(self, new_origin_x: float, new_origin_y: float) -> None:
         """
@@ -595,7 +758,8 @@ class Costmap2D:
                 ox = nx + cell_ox
                 if ox < 0 or ox >= self._size_x:
                     continue
-                self._costmap[self.get_index(nx, ny)] = old_map[self.get_index(ox, oy)]
+                self._costmap[self.get_index(
+                    nx, ny)] = old_map[self.get_index(ox, oy)]
 
         self._origin_x = new_origin_x
         self._origin_y = new_origin_y
@@ -663,6 +827,38 @@ class Costmap2D:
 
         return True, self.convex_fill_cells(map_polygon)
 
+    def set_map_region_occupied_by_polygon(
+        self, polygon_map_region: List[MapLocation], new_cost_value: int
+    ) -> None:
+        """
+        Set the given map region to a desired value.
+
+        Parameters
+        ----------
+        polygon_map_region : list of MapLocation
+            The map region to perform the operation on.
+        new_cost_value : int
+            The value to set the costs to.
+
+        """
+        for cell in polygon_map_region:
+            self.set_cost(cell.x, cell.y, new_cost_value)
+
+    def restore_map_region_occupied_by_polygon(
+        self, polygon_map_region: List[MapLocation]
+    ) -> None:
+        """
+        Restore the corresponding map region using the given map region's stored costs.
+
+        Parameters
+        ----------
+        polygon_map_region : list of MapLocation
+            The map region (with stored costs) to restore.
+
+        """
+        for cell in polygon_map_region:
+            self.set_cost(cell.x, cell.y, cell.cost)
+
     def polygon_outline_cells(
         self,
         polygon: List[Tuple[int, int]]
@@ -695,10 +891,12 @@ class Costmap2D:
 
         n = len(polygon)
         for i in range(n - 1):
-            gather(polygon[i][0], polygon[i][1], polygon[i + 1][0], polygon[i + 1][1])
+            gather(polygon[i][0], polygon[i][1],
+                   polygon[i + 1][0], polygon[i + 1][1])
         if polygon:
             # Close the polygon by going from the last point to the first.
-            gather(polygon[-1][0], polygon[-1][1], polygon[0][0], polygon[0][1])
+            gather(polygon[-1][0], polygon[-1][1],
+                   polygon[0][0], polygon[0][1])
         return cells
 
     def convex_fill_cells(
@@ -864,3 +1062,68 @@ class Costmap2D:
     def is_in_bounds(self, mx: int, my: int) -> bool:
         """Return whether the map coordinates ``(mx, my)`` lie within the costmap bounds."""
         return 0 <= mx < self._size_x and 0 <= my < self._size_y
+
+    def get_size_in_cells_x(self) -> int:
+        """Accessor for the x size of the costmap in cells."""
+        return self._size_x
+
+    def get_size_in_cells_y(self) -> int:
+        """Accessor for the y size of the costmap in cells."""
+        return self._size_y
+
+    def get_size_in_meters_x(self) -> float:
+        """Accessor for the x size of the costmap in meters."""
+        return self._size_x * self._resolution
+
+    def get_size_in_meters_y(self) -> float:
+        """Accessor for the y size of the costmap in meters."""
+        return self._size_y * self._resolution
+
+    def get_origin_x(self) -> float:
+        """Accessor for the x origin of the costmap."""
+        return self._origin_x
+
+    def get_origin_y(self) -> float:
+        """Accessor for the y origin of the costmap."""
+        return self._origin_y
+
+    def get_resolution(self) -> float:
+        """Accessor for the resolution of the costmap."""
+        return self._resolution
+
+    def get_default_value(self) -> int:
+        """Get the default background value of the costmap."""
+        return self._default_value
+
+    def set_default_value(self, c: int) -> None:
+        """Set the default background value of the costmap."""
+        self._default_value = c
+
+    @classmethod
+    def from_occupancy_grid(cls, grid: 'object') -> 'Costmap2D':
+        """
+        Construct a costmap from a ``nav_msgs/msg/OccupancyGrid`` map.
+
+        Parameters
+        ----------
+        grid : nav_msgs.msg.OccupancyGrid
+            The occupancy grid to create the costmap from.
+
+        Returns
+        -------
+        Costmap2D
+            The costmap initialized from the occupancy grid.
+
+        """
+        info = grid.info  # type: ignore[attr-defined]
+        costmap = cls(
+            info.width, info.height, info.resolution,
+            info.origin.position.x, info.origin.position.y)
+        scale = (LETHAL_OBSTACLE - FREE_SPACE) / \
+            (OCC_GRID_OCCUPIED - OCC_GRID_FREE)
+        for it, data in enumerate(grid.data):  # type: ignore[attr-defined]
+            if data == OCC_GRID_UNKNOWN:
+                costmap._costmap[it] = NO_INFORMATION
+            else:
+                costmap._costmap[it] = int(math.floor(data * scale + 0.5))
+        return costmap

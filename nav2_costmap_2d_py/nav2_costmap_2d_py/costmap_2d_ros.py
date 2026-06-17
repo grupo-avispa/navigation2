@@ -25,6 +25,7 @@ with the entry_points group ``"nav2_costmap_2d_py_plugins"``.
 """
 
 import math
+import sys
 import threading
 import time
 import traceback
@@ -97,18 +98,26 @@ class Costmap2DROS(LifecycleNode):
         # for a namespaced robot).
         tf_topic = _add_namespaces(parent_namespace, 'tf')
         tf_static_topic = _add_namespaces(parent_namespace, 'tf_static')
+        # Kept so the dedicated TF listener node (created in on_configure) can
+        # apply the same /tf remaps.
+        self._tf_topic = tf_topic
+        self._tf_static_topic = tf_static_topic
 
-        # Pass __ns / __node as *node-local* arguments.
-        super().__init__(
-            name,
-            cli_args=[
-                '--ros-args',
-                '-r', f'__ns:={costmap_namespace}',
-                '-r', f'__node:={name}',
-                '-r', f'/tf:={tf_topic}',
-                '-r', f'/tf_static:={tf_static_topic}',
-            ],
-        )
+        # Inherit the parent process's ROS arguments (notably ``--params-file``)
+        # and override only the namespace / node-name / tf remaps.
+        # Without inheriting ``--params-file`` the
+        # costmap sub-node starts with no parameters and every layer/filter falls
+        # back to its defaults (empty observation_sources, default inflation
+        # radius, no filters, ...).
+        cli_args = ['--ros-args']
+        cli_args += _inherited_ros_args()
+        cli_args += [
+            '-r', f'__ns:={costmap_namespace}',
+            '-r', f'__node:={name}',
+            '-r', f'/tf:={tf_topic}',
+            '-r', f'/tf_static:={tf_static_topic}',
+        ]
+        super().__init__(name, cli_args=cli_args)
 
         # Set use_sim_time before declaring other parameters so that time
         # sources are configured correctly during on_configure.
@@ -151,6 +160,7 @@ class Costmap2DROS(LifecycleNode):
         self._layered_costmap: Optional[LayeredCostmap] = None
         self._tf_buffer: Optional[Buffer] = None
         self._tf_listener: Optional[TransformListener] = None
+        self._tf_listener_node: Optional[Any] = None
         self._costmap_publisher: Optional[Costmap2DPublisher] = None
         self._layer_publishers: List[Costmap2DPublisher] = []
         self._footprint_pub: Optional[Any] = None
@@ -250,8 +260,28 @@ class Costmap2DROS(LifecycleNode):
             )
 
         # ----- TF -----
+        # The costmap node is spun by the parent server's single-threaded
+        # executor, so a blocking lookup_transform() inside a sensor callback
+        # would stall /tf processing and the lookup would fail with
+        # "extrapolation into the future". tf2_ros' spin_thread=True cannot reuse
+        # this node (it is already owned by another executor), so the listener
+        # gets its OWN node + dedicated spin thread, mirroring the C++
+        # tf2_ros::TransformListener. use_global_arguments=False keeps it from
+        # inheriting the parent's relative '/tf:=tf' remap; we apply the costmap's
+        # own /tf remaps explicitly instead.
         self._tf_buffer = Buffer()
-        self._tf_listener = TransformListener(self._tf_buffer, self)
+        self._tf_listener_node = rclpy.create_node(
+            f'{self._name}_tf_listener',
+            namespace=self.get_namespace(),
+            use_global_arguments=False,
+            cli_args=[
+                '--ros-args',
+                '-r', f'/tf:={self._tf_topic}',
+                '-r', f'/tf_static:={self._tf_static_topic}',
+            ],
+        )
+        self._tf_listener = TransformListener(
+            self._tf_buffer, self._tf_listener_node, spin_thread=True)
 
         # ----- Load layer plugins -----
         for i, pname in enumerate(self._plugin_names):
@@ -505,6 +535,10 @@ class Costmap2DROS(LifecycleNode):
         self._layer_publishers.clear()
         self._layered_costmap = None
         self._tf_listener = None
+        if self._tf_listener_node is not None:
+            # Stops the dedicated TF spin thread and frees the listener node.
+            self._tf_listener_node.destroy_node()
+            self._tf_listener_node = None
         self._tf_buffer = None
         self._footprint_sub = None
         self._footprint_pub = None
@@ -1223,6 +1257,56 @@ class Costmap2DROS(LifecycleNode):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _inherited_ros_args() -> List[str]:
+    """
+    Collect the process ROS arguments to forward to the costmap sub-node.
+
+    Returns every token that followed a ``--ros-args`` marker in ``sys.argv``
+    (e.g. ``--params-file <file>``, ``-p use_sim_time:=...``) while dropping the
+    parent's ``__ns`` / ``__node`` remaps, which the costmap node overrides with
+    its own. Mirrors the C++ ``getChildNodeOptions()`` that builds the child
+    options from ``parent_options.arguments()``.
+
+    Returns
+    -------
+    list of str
+        The ROS argument tokens to forward (without a leading ``--ros-args``).
+
+    """
+    out: List[str] = []
+    in_ros_args = False
+    i = 0
+    argv = sys.argv
+    while i < len(argv):
+        tok = argv[i]
+        if tok == '--ros-args':
+            in_ros_args = True
+            i += 1
+            continue
+        if tok == '--':
+            # End of a ``--ros-args`` block.
+            in_ros_args = False
+            i += 1
+            continue
+        if not in_ros_args:
+            i += 1
+            continue
+        # Drop the parent's namespace / node-name / tf remaps; the costmap node
+        # sets its own below. In particular the parent's relative ``/tf:=tf``
+        # remap would otherwise resolve under the costmap namespace
+        # (``/<ns>/tf``) and the costmap would never receive transforms.
+        if (tok == '-r' and i + 1 < len(argv)
+                and (argv[i + 1].startswith('__ns:=')
+                     or argv[i + 1].startswith('__node:=')
+                     or argv[i + 1].startswith('/tf:=')
+                     or argv[i + 1].startswith('/tf_static:='))):
+            i += 2
+            continue
+        out.append(tok)
+        i += 1
+    return out
+
 
 def _add_namespaces(parent: str, local: str) -> str:
     """

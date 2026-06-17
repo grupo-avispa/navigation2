@@ -56,6 +56,33 @@ class _MarkingLayer(Layer):
         self._current = True
 
 
+class _RecordingFilter(Layer):
+    """Test costmap filter that records its calls and stamps a single cell."""
+
+    def __init__(self, stamp_cell=(7, 7), stamp_cost=LETHAL_OBSTACLE):
+        super().__init__()
+        self._enabled = True
+        self._stamp_cell = stamp_cell
+        self._stamp_cost = stamp_cost
+        self.bounds_calls = 0
+        self.costs_calls = 0
+
+    def update_bounds(self, robot_x, robot_y, robot_yaw, min_x, min_y, max_x, max_y):
+        """Record the call and expand the window to cover the whole 10x10 map."""
+        self.bounds_calls += 1
+        min_x[0] = min(min_x[0], 0.0)
+        min_y[0] = min(min_y[0], 0.0)
+        max_x[0] = max(max_x[0], 9.5)
+        max_y[0] = max(max_y[0], 9.5)
+
+    def update_costs(self, master_grid, min_i, min_j, max_i, max_j):
+        """Record the call and stamp a single cell onto the master grid."""
+        self.costs_calls += 1
+        mx, my = self._stamp_cell
+        master_grid.set_cost(mx, my, self._stamp_cost)
+        self._current = True
+
+
 class TestLayeredCostmap(unittest.TestCase):
     """Test suite for LayeredCostmap."""
 
@@ -117,6 +144,45 @@ class TestLayeredCostmap(unittest.TestCase):
         self.assertAlmostEqual(self.lc.circumscribed_radius, math.sqrt(0.5))
         self.assertAlmostEqual(self.lc.inscribed_radius, 0.5)
         self.assertEqual(self.lc.get_footprint(), footprint)
+
+    def test_filter_update_bounds_called(self) -> None:
+        """Filters receive update_bounds each cycle, not only update_costs."""
+        flt = _RecordingFilter()
+        self.lc.add_filter(flt)
+        self.lc.update_map(0.0, 0.0, 0.0)
+        self.assertEqual(flt.bounds_calls, 1)
+        self.assertEqual(flt.costs_calls, 1)
+
+    def test_filter_applied_after_plugins(self) -> None:
+        """A filter writes onto the combined costmap on top of the plugins."""
+        plugin = _MarkingLayer(mark_cell=(5, 5))
+        flt = _RecordingFilter(stamp_cell=(7, 7))
+        self.lc.add_plugin(plugin)
+        self.lc.add_filter(flt)
+        self.lc.update_map(0.0, 0.0, 0.0)
+
+        master = self.lc.get_costmap()
+        self.assertEqual(master.get_cost(5, 5), LETHAL_OBSTACLE)
+        self.assertEqual(master.get_cost(7, 7), LETHAL_OBSTACLE)
+
+    def test_filter_output_isolated_from_primary(self) -> None:
+        """
+        Filters write only into the combined costmap, never the primary one.
+
+        This guarantees a filter's work (e.g. keepout) is not fed back into the
+        plugins on the next update cycle.
+        """
+        plugin = _MarkingLayer(mark_cell=(5, 5))
+        flt = _RecordingFilter(stamp_cell=(7, 7))
+        self.lc.add_plugin(plugin)
+        self.lc.add_filter(flt)
+        self.lc.update_map(0.0, 0.0, 0.0)
+
+        # The plugin mark lands in both costmaps; the filter stamp only lands in
+        # the combined costmap and leaves the primary costmap untouched.
+        self.assertEqual(self.lc._primary_costmap.get_cost(5, 5), LETHAL_OBSTACLE)
+        self.assertEqual(self.lc._primary_costmap.get_cost(7, 7), FREE_SPACE)
+        self.assertEqual(self.lc.get_costmap().get_cost(7, 7), LETHAL_OBSTACLE)
 
 
 class TestFootprintHelpers(unittest.TestCase):

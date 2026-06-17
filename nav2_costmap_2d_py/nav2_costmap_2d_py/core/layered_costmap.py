@@ -63,6 +63,12 @@ class LayeredCostmap:
 
         default_value = NO_INFORMATION if track_unknown_space else FREE_SPACE
         self._combined_costmap = Costmap2D(default_value=default_value)
+        # "Primary" costmap holding only the plugin output. When costmap filters
+        # are present, plugins write here and the result is copied into the
+        # combined costmap before the filters are applied, so the filters' work
+        # (e.g. keepout) is not fed back into the plugins on the next update
+        # cycle.
+        self._primary_costmap = Costmap2D(default_value=default_value)
 
         self._plugins: List[Layer] = []
         self._filters: List[Layer] = []   # costmap filters
@@ -118,6 +124,9 @@ class LayeredCostmap:
         with self._combined_costmap.get_mutex():
             self._size_locked = size_locked
             self._combined_costmap.resize_map(
+                size_x, size_y, resolution, origin_x, origin_y
+            )
+            self._primary_costmap.resize_map(
                 size_x, size_y, resolution, origin_x, origin_y
             )
             for plugin in self._plugins:
@@ -183,19 +192,21 @@ class LayeredCostmap:
 
         Notes
         -----
-        1. If rolling window, shift origin to keep robot centred.
-        2. Reset combined costmap to default value.
-        3. Call ``update_bounds`` on every plugin.
-        4. Call ``update_costs`` on every plugin within bounds.
-        5. Apply filters on top.
+        1. If rolling window, shift the origin of both costmaps to keep the
+           robot centred.
+        2. Call ``update_bounds`` on every plugin and then every filter.
+        3. Reset the dirty region and call ``update_costs`` on every plugin.
+        4. When filters are present, plugins write into the primary costmap, the
+           processed window is copied into the combined costmap, and the filters
+           are applied on top of the combined costmap only.
 
         """
         with self._combined_costmap.get_mutex():
             # ----- Rolling window origin shift -----
-            # Only the combined costmap's
-            # origin is rolled here. Each layer rolls its OWN costmap inside its
-            # update_bounds (match_size is NOT called every cycle, which would
-            # wipe the accumulated obstacle data).
+            # Only the primary/combined costmap origins are rolled here. Each
+            # layer rolls its OWN costmap inside its update_bounds (match_size is
+            # NOT called every cycle, which would wipe the accumulated obstacle
+            # data).
             if self._rolling_window:
                 new_origin_x = (
                     robot_x
@@ -205,6 +216,9 @@ class LayeredCostmap:
                     robot_y
                     - self._combined_costmap.size_y_meters / 2.0
                 )
+                # Roll both costmaps so the primary/combined cells stay aligned.
+                self._primary_costmap.update_origin(
+                    new_origin_x, new_origin_y)
                 self._combined_costmap.update_origin(
                     new_origin_x, new_origin_y)
 
@@ -215,9 +229,14 @@ class LayeredCostmap:
             max_x = [-_INF]
             max_y = [-_INF]
 
-            # ----- update_bounds on each plugin -----
+            # ----- update_bounds on each plugin, then each filter -----
             for plugin in self._plugins:
                 plugin.update_bounds(
+                    robot_x, robot_y, robot_yaw,
+                    min_x, min_y, max_x, max_y
+                )
+            for f in self._filters:
+                f.update_bounds(
                     robot_x, robot_y, robot_yaw,
                     min_x, min_y, max_x, max_y
                 )
@@ -234,19 +253,34 @@ class LayeredCostmap:
             xn, yn = self._combined_costmap.world_to_map_enforce_bounds(
                 max_x[0], max_y[0]
             )
+            x0 = max(0, x0)
+            y0 = max(0, y0)
             xn = min(xn + 1, self._combined_costmap.size_x)
             yn = min(yn + 1, self._combined_costmap.size_y)
 
-            # ----- Reset dirty region to default value -----
-            self._combined_costmap.reset_map(x0, y0, xn, yn)
+            if xn < x0 or yn < y0:
+                return
 
-            # ----- update_costs on each plugin -----
-            for plugin in self._plugins:
-                plugin.update_costs(self._combined_costmap, x0, y0, xn, yn)
-
-            # ----- Apply filters after plugins -----
-            for f in self._filters:
-                f.update_costs(self._combined_costmap, x0, y0, xn, yn)
+            if not self._filters:
+                # No filters: plugins write straight into the combined costmap.
+                self._combined_costmap.reset_map(x0, y0, xn, yn)
+                for plugin in self._plugins:
+                    plugin.update_costs(self._combined_costmap, x0, y0, xn, yn)
+            else:
+                # Filters present: plugins write into the primary costmap, the
+                # processed window is copied into the combined costmap, and the
+                # filters are applied on top of the combined costmap only. The
+                # primary costmap stays untouched by the filters so plugins keep
+                # reading clean data on the next cycle.
+                self._primary_costmap.reset_map(x0, y0, xn, yn)
+                for plugin in self._plugins:
+                    plugin.update_costs(self._primary_costmap, x0, y0, xn, yn)
+                if not self._combined_costmap.copy_window(
+                        self._primary_costmap, x0, y0, xn, yn, x0, y0):
+                    raise RuntimeError(
+                        f'Cannot copy costmap ({x0},{y0})..({xn},{yn}) window')
+                for f in self._filters:
+                    f.update_costs(self._combined_costmap, x0, y0, xn, yn)
 
             self._bx0 = x0
             self._bxn = xn

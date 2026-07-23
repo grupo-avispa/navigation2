@@ -28,10 +28,10 @@ class StraightLinePlanner(GlobalPlanner):
     Use this as a template for implementing your own Python planner plugin.
     """
 
-    def configure(self, parent, name, tf_buffer, costmap_ros):
+    def configure(self, parent, name, tf, costmap_ros):
         self._node = parent
         self._name = name
-        self._tf_buffer = tf_buffer
+        self._tf_buffer = tf
         self._costmap = costmap_ros
 
         # Declare / read plugin-specific parameters. declare_or_get_parameter is

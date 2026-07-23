@@ -26,6 +26,7 @@ import re
 from typing import Any, List, Optional, Tuple
 
 from geometry_msgs.msg import PoseStamped
+from nav2_costmap_2d_py import Costmap2DROS
 from nav2_costmap_2d_py.core.cost_values import (FREE_SPACE, INSCRIBED_INFLATED_OBSTACLE,
                                                  LETHAL_OBSTACLE, NO_INFORMATION)
 from nav2_msgs.srv import IsPathValid
@@ -47,7 +48,7 @@ class IsPathValidService:
     def __init__(
         self,
         node: LifecycleNode,
-        costmap_ros,
+        costmap_ros: Costmap2DROS,
         costmap_update_timeout: Duration,
     ) -> None:
         """
@@ -75,7 +76,7 @@ class IsPathValidService:
         if self._node is None:
             raise RuntimeError('Failed to lock node in initialize')
 
-        self._costmap = self._costmap_ros.get_costmap()
+        self._costmap = self._costmap_ros.get_costmap()  # type: ignore[assignment]
 
         self._service = self._node.create_service(
             IsPathValid, 'is_path_valid', self._callback
@@ -117,7 +118,7 @@ class IsPathValidService:
             return self._costmap
 
         try:
-            layers = self._costmap_ros.get_layered_costmap().get_plugins()
+            layers = self._costmap_ros.get_layered_costmap().get_plugins()  # type: ignore
             for layer in layers:
                 if layer.get_name() == layer_name:
                     # Check if layer provides a costmap
@@ -177,6 +178,8 @@ class IsPathValidService:
 
         return [], use_radius
 
+    # TODO(ajtudela): Rename to _make_footprint_from_string and move to Footprint class
+    # in nav2_costmap_2d_py, so it can be reused by other packages.
     def _parse_footprint_string(
         self, footprint_string: str
     ) -> List[Tuple[float, float]]:
@@ -295,9 +298,7 @@ class IsPathValidService:
         # Wait for costmap to become current (skip if timeout is zero or negative)
         if self._costmap_update_timeout > Duration(seconds=0):
             try:
-                self._costmap_ros.wait_until_current(
-                    self._costmap_update_timeout
-                )
+                self._costmap_ros.wait_until_current(self._costmap_update_timeout)
             except Exception as ex:
                 self._logger.error(f'Failed to wait for costmap: {ex}')
                 response.success = False
@@ -308,8 +309,7 @@ class IsPathValidService:
         try:
             current_pose = self._costmap_ros.get_robot_pose()
             if current_pose is None:
-                self._logger.error(
-                    'Failed to get robot pose. Cannot validate path.')
+                self._logger.error('Failed to get robot pose. Cannot validate path.')
                 response.success = False
                 response.is_valid = False
                 return response
@@ -319,10 +319,10 @@ class IsPathValidService:
             response.is_valid = False
             return response
 
-        # Find closest point on the path to avoid checking already-passed points
-        closest_point_index = self._find_closest_point_index(
-            current_pose, request.path
-        )
+        # The lethal check starts at the closest point to avoid points that have already been
+        # passed and may have become occupied. The method for collision detection is based
+        # on the shape of the footprint.
+        closest_point_index = self._find_closest_point_index(current_pose, request.path)
 
         # Determine which costmap to use based on layer_name parameter
         costmap_to_check = self._get_costmap_to_check(request.layer_name)
@@ -332,6 +332,8 @@ class IsPathValidService:
             response.is_valid = False
             return response
 
+        # TODO(ajtudela): Add lock on costmap_to_check?
+
         # Determine footprint to use
         footprint, use_radius = self._get_footprint_to_use(request.footprint)
 
@@ -340,10 +342,12 @@ class IsPathValidService:
             response.is_valid = False
             return response
 
+        # TODO(ajtudela): Create collision checker as in C++ implementation
+
         # Determine the end index for validation based on lookahead distance
         end_index = len(request.path.poses)
         if request.max_lookahead_distance > 0.0:
-            end_index = self._find_end_index_by_distance(
+            end_index = self._first_after_integrated_distance(
                 request.path.poses,
                 closest_point_index,
                 request.max_lookahead_distance,
@@ -364,14 +368,14 @@ class IsPathValidService:
                 theta = self._get_yaw_from_orientation(
                     request.path.poses[i].pose.orientation
                 )
+                # TODO(ajtudela): Move this function to collision checker class
+                # and rename to footprint_cost_at_pose
                 cost = self._get_cost_at_pose_footprint(
                     costmap_to_check, position.x, position.y, theta, footprint
                 )
 
             # Handle unknown information
-            if (
-                cost == NO_INFORMATION and request.consider_unknown_as_obstacle
-            ):
+            if (cost == NO_INFORMATION and request.consider_unknown_as_obstacle):
                 cost = LETHAL_OBSTACLE
             elif cost == NO_INFORMATION:
                 cost = FREE_SPACE
@@ -493,7 +497,7 @@ class IsPathValidService:
 
         return max_cost
 
-    def _find_end_index_by_distance(
+    def _first_after_integrated_distance(
         self,
         poses: List[PoseStamped],
         start_index: int,

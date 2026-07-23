@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional
 
 from bondpy import bondpy  # type: ignore[import-untyped]
 from builtin_interfaces.msg import Duration as DurationMsg
-from geometry_msgs.msg import PoseStamped, TransformStamped
+from geometry_msgs.msg import PoseStamped
 from nav2_core_py.global_planner import GlobalPlanner
 from nav2_core_py.planner_exceptions import (GoalOccupied, GoalOutsideMapBounds, InvalidPlanner,
                                              NoValidPathCouldBeFound, NoViapointsGiven,
@@ -51,7 +51,6 @@ from nav_msgs.msg import Path
 import rclpy
 from rclpy.action import ActionServer
 from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.duration import Duration
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 import tf2_geometry_msgs  # type: ignore[import-untyped]  # noqa: F401
 import tf2_ros  # type: ignore[import-untyped]
@@ -70,7 +69,7 @@ class PlannerServer(LifecycleNode):
     """
 
     def __init__(self) -> None:
-        super().__init__('nav2_planner')
+        super().__init__('planner_server')
 
         # Plugin registry  {planner_id: GlobalPlanner}
         self._planners: Dict[str, GlobalPlanner] = {}
@@ -95,6 +94,7 @@ class PlannerServer(LifecycleNode):
         # TF / costmap interfaces
         self._tf_buffer: Optional[tf2_ros.Buffer] = None
         self._costmap_ros: Optional[Costmap2DROS] = None
+        # TODO(ajtudela): Remove / Replace this. See nexts TODOS.
         self._costmap_executor: Optional[rclpy.executors.SingleThreadedExecutor] = None
         self._costmap_thread: Optional[threading.Thread] = None
         self._costmap_activated: threading.Event = threading.Event()
@@ -113,7 +113,7 @@ class PlannerServer(LifecycleNode):
         self._bond: Optional[bondpy.Bond] = None
         self._bond_heartbeat_period: float = 0.1
 
-        self.get_logger().info('Creating nav2_planner')
+        self.get_logger().info('Creating')
 
     # ------------------------------------------------------------------
     # Lifecycle callbacks
@@ -137,6 +137,7 @@ class PlannerServer(LifecycleNode):
         self.get_logger().info('Configuring')
 
         # --- Global Costmap --------------------------------------------
+        # TODO(ajtudela): Move the creation of the costmap to init as in c++ version?
         try:
             self._costmap_ros = Costmap2DROS(
                 name='global_costmap',
@@ -147,12 +148,19 @@ class PlannerServer(LifecycleNode):
             # Configure the costmap before spinning its executor so that the
             # lifecycle_manager cannot race-configure it via the lifecycle
             # service while on_configure(None) is still running.
+            # TODO(ajtudela): This should be self._costmap_ros.configure() ?
             result = self._costmap_ros.on_configure(None)  # type: ignore[arg-type]
             if result != TransitionCallbackReturn.SUCCESS:
                 raise RuntimeError('Failed to configure costmap')
+
+            # TODO(ajtudela): Store the costmapas in c++ version
+            # # self._costmap: Costmap2D = self._costmap_ros.get_costmap()
+
             # Only AFTER configure succeeds, start the dedicated executor so
             # that TF/topic subscriptions are served during on_activate and
             # steady-state operation.
+            # TODO(ajtudela): Create NodeThread class as en c++ version and replace
+            # the _costmap_executor with it. Similar to c++ version
             self._costmap_executor = rclpy.executors.SingleThreadedExecutor()
             self._costmap_executor.add_node(self._costmap_ros)
             self._costmap_thread = threading.Thread(
@@ -166,6 +174,8 @@ class PlannerServer(LifecycleNode):
                 f'Failed to initialize Costmap2DROS: {ex}.')
             self.on_cleanup(state)
             return TransitionCallbackReturn.FAILURE
+
+        # TODO(ajtudela): Add a debug logger with the costmap size as in C++ version
 
         # --- TF buffer -------------------------------------------------
         try:
@@ -222,12 +232,12 @@ class PlannerServer(LifecycleNode):
                     )
                     self._planners[planner_id] = planner
                     self.get_logger().info(
-                        f'[{self.get_name()}] Created planner: '
+                        f'[{self.get_name()}] Created global planner plugin '
                         f"'{planner_id}' of type '{plugin_type}'"
                     )
                 except Exception as ex:  # noqa: BLE001
                     self.get_logger().fatal(
-                        f'[{self.get_name()}] Failed to create planner '
+                        f'[{self.get_name()}] Failed to create global planner '
                         f"'{planner_id}': {type(ex).__name__}: {ex}\n"
                         f'{traceback.format_exc()}'
                     )
@@ -264,7 +274,7 @@ class PlannerServer(LifecycleNode):
                 self,
                 ComputePathToPose,
                 'compute_path_to_pose',
-                execute_callback=self._compute_path_to_pose_callback,
+                execute_callback=self._compute_plan,
                 callback_group=self._callback_group,
             )
             self.get_logger().debug('ActionServer ComputePathToPose created')
@@ -273,7 +283,7 @@ class PlannerServer(LifecycleNode):
                 self,
                 ComputePathThroughPoses,
                 'compute_path_through_poses',
-                execute_callback=self._compute_path_through_poses_callback,
+                execute_callback=self._compute_plan_through_poses,
                 callback_group=self._callback_group,
             )
             self.get_logger().debug('ActionServer ComputePathThroughPoses created')
@@ -309,6 +319,7 @@ class PlannerServer(LifecycleNode):
 
         self.create_bond()
 
+        # TODO(ajtudela): Use self._costmap_ros.activate() and check state as in C++
         self._costmap_activate_thread = threading.Thread(
             target=self._activate_background,
             args=(state,),
@@ -316,6 +327,9 @@ class PlannerServer(LifecycleNode):
             name='planner_activate',
         )
         self._costmap_activate_thread.start()
+
+        # TODO(ajtudela): Activate planners here
+
         return TransitionCallbackReturn.SUCCESS
 
     def _activate_background(self, state: LifecycleState) -> None:
@@ -409,10 +423,6 @@ class PlannerServer(LifecycleNode):
         """
         self.get_logger().info('Cleaning up')
 
-        for _, planner in self._planners.items():
-            planner.cleanup()
-        self._planners.clear()
-
         if self._action_server_pose is not None:
             self._action_server_pose.destroy()
             self._action_server_pose = None
@@ -421,6 +431,9 @@ class PlannerServer(LifecycleNode):
             self._action_server_poses.destroy()
             self._action_server_poses = None
 
+        self._tf_buffer = None
+
+        # TODO(ajtudela): Use costmap_thread_.reset as in C++
         if self._costmap_activate_thread is not None \
                 and self._costmap_activate_thread.is_alive() \
                 and threading.current_thread() is not self._costmap_activate_thread:
@@ -428,6 +441,7 @@ class PlannerServer(LifecycleNode):
         self._costmap_activate_thread = None
         self._costmap_activated.clear()
 
+        # TODO(ajtudela): Use self._costmap_ros.cleanup() as in C++
         if self._costmap_ros is not None:
             result = self._costmap_ros.on_cleanup(state)
             if result != TransitionCallbackReturn.SUCCESS:
@@ -440,7 +454,10 @@ class PlannerServer(LifecycleNode):
             self._costmap_thread.join(timeout=2.0)
             self._costmap_thread = None
 
-        self._tf_buffer = None
+        for _, planner in self._planners.items():
+            planner.cleanup()
+        self._planners.clear()
+
         self.get_logger().info('Cleaned up')
         return TransitionCallbackReturn.SUCCESS
 
@@ -488,7 +505,7 @@ class PlannerServer(LifecycleNode):
                 self._bond = None
 
     # --- ComputePathToPose --------------------------------------------
-    async def _compute_path_to_pose_callback(self, goal_handle):
+    def _compute_plan(self, goal_handle):
         """
         Execute callback for ComputePathToPose action.
 
@@ -545,8 +562,7 @@ class PlannerServer(LifecycleNode):
             # Transform poses to global frame
             goal_pose = goal.goal
             if not self._transform_poses_to_global_frame(start_pose, goal_pose):
-                raise PlannerTFError(
-                    'Unable to transform poses to global frame')
+                raise PlannerTFError('Unable to transform poses to global frame')
 
             # Get plan
             result.path = self._get_plan(
@@ -559,9 +575,7 @@ class PlannerServer(LifecycleNode):
 
             # Validate path
             if not result.path.poses:
-                raise NoValidPathCouldBeFound(
-                    f"Planning failed for planner '{planner_id}': No valid path found"
-                )
+                raise NoValidPathCouldBeFound('{planner_id} generated and empty path')
 
             # Publish plan
             self._publish_plan(result.path)
@@ -589,43 +603,35 @@ class PlannerServer(LifecycleNode):
             self.get_logger().info('Path computed successfully')
 
         except InvalidPlanner as ex:
-            self._exception_warning(
-                start_pose, goal_pose, goal.planner_id, ex, result)
+            self._exception_warning(start_pose, goal_pose, goal.planner_id, ex, result)
             result.error_code = ComputePathToPose.Result.INVALID_PLANNER
             goal_handle.abort(result)
         except StartOccupied as ex:
-            self._exception_warning(
-                start_pose, goal_pose, goal.planner_id, ex, result)
+            self._exception_warning(start_pose, goal_pose, goal.planner_id, ex, result)
             result.error_code = ComputePathToPose.Result.START_OCCUPIED
             goal_handle.abort(result)
         except GoalOccupied as ex:
-            self._exception_warning(
-                start_pose, goal_pose, goal.planner_id, ex, result)
+            self._exception_warning(start_pose, goal_pose, goal.planner_id, ex, result)
             result.error_code = ComputePathToPose.Result.GOAL_OCCUPIED
             goal_handle.abort(result)
         except NoValidPathCouldBeFound as ex:
-            self._exception_warning(
-                start_pose, goal_pose, goal.planner_id, ex, result)
+            self._exception_warning(start_pose, goal_pose, goal.planner_id, ex, result)
             result.error_code = ComputePathToPose.Result.NO_VALID_PATH
             goal_handle.abort(result)
         except PlannerTimedOut as ex:
-            self._exception_warning(
-                start_pose, goal_pose, goal.planner_id, ex, result)
+            self._exception_warning(start_pose, goal_pose, goal.planner_id, ex, result)
             result.error_code = ComputePathToPose.Result.TIMEOUT
             goal_handle.abort(result)
         except StartOutsideMapBounds as ex:
-            self._exception_warning(
-                start_pose, goal_pose, goal.planner_id, ex, result)
+            self._exception_warning(start_pose, goal_pose, goal.planner_id, ex, result)
             result.error_code = ComputePathToPose.Result.START_OUTSIDE_MAP
             goal_handle.abort(result)
         except GoalOutsideMapBounds as ex:
-            self._exception_warning(
-                start_pose, goal_pose, goal.planner_id, ex, result)
+            self._exception_warning(start_pose, goal_pose, goal.planner_id, ex, result)
             result.error_code = ComputePathToPose.Result.GOAL_OUTSIDE_MAP
             goal_handle.abort(result)
         except PlannerTFError as ex:
-            self._exception_warning(
-                start_pose, goal_pose, goal.planner_id, ex, result)
+            self._exception_warning(start_pose, goal_pose, goal.planner_id, ex, result)
             result.error_code = ComputePathToPose.Result.TF_ERROR
             goal_handle.abort(result)
         except PlannerCancelled:
@@ -633,8 +639,7 @@ class PlannerServer(LifecycleNode):
             self.get_logger().info(result.error_msg)
             goal_handle.canceled()
         except Exception as ex:  # noqa: BLE001
-            self._exception_warning(
-                start_pose, goal_pose, goal.planner_id, ex, result)
+            self._exception_warning(start_pose, goal_pose, goal.planner_id, ex, result)
             result.error_code = ComputePathToPose.Result.UNKNOWN
             goal_handle.abort(result)
 
@@ -642,7 +647,7 @@ class PlannerServer(LifecycleNode):
 
     # --- ComputePathThroughPoses --------------------------------------
 
-    async def _compute_path_through_poses_callback(self, goal_handle):
+    def _compute_plan_through_poses(self, goal_handle):
         """
         Execute callback for ComputePathThroughPoses action.
 
@@ -659,7 +664,7 @@ class PlannerServer(LifecycleNode):
             The result with the concatenated path or an error code.
 
         """
-        self.get_logger().info('Computing path through poses')
+        self.get_logger().info('Computing path through poses to goal.')
         result = ComputePathThroughPoses.Result()
         start_time = self.get_clock().now()
 
@@ -692,7 +697,7 @@ class PlannerServer(LifecycleNode):
 
             # Validate goals list is not empty
             if not goal.goals:
-                raise NoViapointsGiven('No goals provided')
+                raise NoViapointsGiven('No viapoints given')
 
             # Get start pose
             if goal.use_start:
@@ -721,8 +726,7 @@ class PlannerServer(LifecycleNode):
 
                 # Transform poses to global frame
                 if not self._transform_poses_to_global_frame(curr_start, curr_goal):
-                    raise PlannerTFError(
-                        'Unable to transform poses to global frame')
+                    raise PlannerTFError('Unable to transform poses to global frame')
 
                 # Get plan from current start to current goal
                 # ComputePathThroughPoses does not carry per-segment viapoints;
@@ -809,48 +813,39 @@ class PlannerServer(LifecycleNode):
             self.get_logger().info('Path through poses computed successfully')
 
         except InvalidPlanner as ex:
-            self._exception_warning(
-                start_pose, goal_pose, goal.planner_id, ex, result)
+            self._exception_warning(start_pose, goal_pose, goal.planner_id, ex, result)
             result.error_code = ComputePathThroughPoses.Result.INVALID_PLANNER
             goal_handle.abort(result)
         except StartOccupied as ex:
-            self._exception_warning(
-                start_pose, goal_pose, goal.planner_id, ex, result)
+            self._exception_warning(start_pose, goal_pose, goal.planner_id, ex, result)
             result.error_code = ComputePathThroughPoses.Result.START_OCCUPIED
             goal_handle.abort(result)
         except GoalOccupied as ex:
-            self._exception_warning(
-                start_pose, goal_pose, goal.planner_id, ex, result)
+            self._exception_warning(start_pose, goal_pose, goal.planner_id, ex, result)
             result.error_code = ComputePathThroughPoses.Result.GOAL_OCCUPIED
             goal_handle.abort(result)
         except NoValidPathCouldBeFound as ex:
-            self._exception_warning(
-                start_pose, goal_pose, goal.planner_id, ex, result)
+            self._exception_warning(start_pose, goal_pose, goal.planner_id, ex, result)
             result.error_code = ComputePathThroughPoses.Result.NO_VALID_PATH
             goal_handle.abort(result)
         except PlannerTimedOut as ex:
-            self._exception_warning(
-                start_pose, goal_pose, goal.planner_id, ex, result)
+            self._exception_warning(start_pose, goal_pose, goal.planner_id, ex, result)
             result.error_code = ComputePathThroughPoses.Result.TIMEOUT
             goal_handle.abort(result)
         except StartOutsideMapBounds as ex:
-            self._exception_warning(
-                start_pose, goal_pose, goal.planner_id, ex, result)
+            self._exception_warning(start_pose, goal_pose, goal.planner_id, ex, result)
             result.error_code = ComputePathThroughPoses.Result.START_OUTSIDE_MAP
             goal_handle.abort(result)
         except GoalOutsideMapBounds as ex:
-            self._exception_warning(
-                start_pose, goal_pose, goal.planner_id, ex, result)
+            self._exception_warning(start_pose, goal_pose, goal.planner_id, ex, result)
             result.error_code = ComputePathThroughPoses.Result.GOAL_OUTSIDE_MAP
             goal_handle.abort(result)
         except PlannerTFError as ex:
-            self._exception_warning(
-                start_pose, goal_pose, goal.planner_id, ex, result)
+            self._exception_warning(start_pose, goal_pose, goal.planner_id, ex, result)
             result.error_code = ComputePathThroughPoses.Result.TF_ERROR
             goal_handle.abort(result)
         except NoViapointsGiven as ex:
-            self._exception_warning(
-                start_pose, goal_pose, goal.planner_id, ex, result)
+            self._exception_warning(start_pose, goal_pose, goal.planner_id, ex, result)
             result.error_code = ComputePathThroughPoses.Result.NO_VIAPOINTS_GIVEN
             goal_handle.abort(result)
         except PlannerCancelled:
@@ -858,8 +853,7 @@ class PlannerServer(LifecycleNode):
             self.get_logger().info(result.error_msg)
             goal_handle.canceled()
         except Exception as ex:  # noqa: BLE001
-            self._exception_warning(
-                start_pose, goal_pose, goal.planner_id, ex, result)
+            self._exception_warning(start_pose, goal_pose, goal.planner_id, ex, result)
             result.error_code = ComputePathThroughPoses.Result.UNKNOWN
             goal_handle.abort(result)
 
@@ -924,10 +918,8 @@ class PlannerServer(LifecycleNode):
             return False
 
         try:
-            start_transformed = self._costmap_ros.transform_pose_to_global_frame(
-                start)
-            goal_transformed = self._costmap_ros.transform_pose_to_global_frame(
-                goal)
+            start_transformed = self._costmap_ros.transform_pose_to_global_frame(start)
+            goal_transformed = self._costmap_ros.transform_pose_to_global_frame(goal)
 
             if start_transformed is None or goal_transformed is None:
                 return False
@@ -990,6 +982,11 @@ class PlannerServer(LifecycleNode):
             The computed path.
 
         """
+        self.get_logger().debug(
+            f'Attempting to a find path from ({start.pose.position.x}, {start.pose.position.y}) '
+            f'to ({goal.pose.position.x}, {goal.pose.position.y}).'
+        )
+
         # Resolve planner: use the single available one when ID is omitted
         if planner_id not in self._planners:
             if not planner_id and len(self._planners) == 1:
@@ -1000,78 +997,19 @@ class PlannerServer(LifecycleNode):
                 )
                 planner_id = next(iter(self._planners))
             else:
-                raise InvalidPlanner(
-                    f"Planner '{planner_id}' is not loaded. "
-                    f'Available planners: {self._planner_ids_concat}'
+                self.get_logger().error(
+                    f'planner {planner_id} is not a valid planner. '
+                    f'Planner names are: {self._planner_ids_concat}'
                 )
-
-        # Lock parameter handler to safely access parameters
-        assert self._param_handler is not None  # set in on_configure
-        with self._param_handler.get_mutex():
-            params = self._param_handler.get_parameters()
-            max_planner_duration = params.max_planner_duration
+                raise InvalidPlanner(f'Planner id {planner_id} is invalid')
 
         planner = self._planners[planner_id]
-
-        t_start = time.monotonic()
         path = planner.create_plan(start, goal, viapoints, cancel_checker)
-        elapsed = time.monotonic() - t_start
-
-        if max_planner_duration > 0.0 and elapsed > max_planner_duration:
-            self.get_logger().warning(
-                f"Planner '{planner_id}' missed its time budget of "
-                f'{max_planner_duration:.2f}s (took {elapsed:.2f}s)'
-            )
-
-        if not path.poses:
-            raise NoValidPathCouldBeFound(
-                f"Planner '{planner_id}' failed to produce a path."
-            )
-
-        # Stamp header
-        path.header.frame_id = goal.header.frame_id
-        path.header.stamp = self.get_clock().now().to_msg()
-
         return path
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-
-    def _get_current_pose(self) -> Optional[PoseStamped]:
-        """
-        Look up the current robot pose from TF.
-
-        Returns
-        -------
-        Optional[PoseStamped]
-            The current robot pose in the map frame, or None if TF lookup fails.
-
-        """
-        if self._tf_buffer is None:
-            self.get_logger().warning(
-                'TF buffer is not available; cannot get current pose.'
-            )
-            return None
-
-        try:
-            transform: TransformStamped = self._tf_buffer.lookup_transform(
-                'map',
-                'base_link',
-                rclpy.time.Time(),
-                timeout=Duration(seconds=0.5),
-            )
-            pose = PoseStamped()
-            pose.header.frame_id = 'map'
-            pose.header.stamp = transform.header.stamp
-            pose.pose.position.x = transform.transform.translation.x
-            pose.pose.position.y = transform.transform.translation.y
-            pose.pose.position.z = transform.transform.translation.z
-            pose.pose.orientation = transform.transform.rotation
-            return pose
-        except Exception as ex:  # noqa: BLE001
-            self.get_logger().error(f'Could not get robot pose via TF: {ex}')
-            return None
 
     def _exception_warning(
         self,

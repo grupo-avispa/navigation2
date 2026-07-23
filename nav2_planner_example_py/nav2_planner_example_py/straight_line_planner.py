@@ -109,15 +109,27 @@ class StraightLinePlanner(GlobalPlanner):
             return path
 
         steps = max(int(dist / self._resolution), 1)
+
+        yaw = math.atan2(y1 - y0, x1 - x0)
+        half_yaw = yaw * 0.5
+
         for i in range(steps + 1):
             if cancel_checker():
                 break
+
             t = i / steps
+
             pose = PoseStamped()
             pose.header = path.header
+
             pose.pose.position.x = x0 + t * (x1 - x0)
             pose.pose.position.y = y0 + t * (y1 - y0)
-            pose.pose.orientation.w = 1.0
+
+            pose.pose.orientation.x = 0.0
+            pose.pose.orientation.y = 0.0
+            pose.pose.orientation.z = math.sin(half_yaw)
+            pose.pose.orientation.w = math.cos(half_yaw)
+
             path.poses.append(pose)
         print(f'[{self._name}] Created straight-line path with {len(path.poses)} poses')
         return path

@@ -34,6 +34,7 @@ class PlannerException(RuntimeError):
         ----------
         description : str
             A description of what went wrong.
+
         """
         super().__init__(description)
         self.description = description
@@ -51,14 +52,6 @@ class GoalOccupied(PlannerException):
     """Raised when the goal pose is inside an obstacle."""
 
 
-class NoValidPathCouldBeFound(PlannerException):
-    """Raised when the planner cannot find any valid path."""
-
-
-class PlannerTimedOut(PlannerException):
-    """Raised when the planner exceeds its allocated time budget."""
-
-
 class StartOutsideMapBounds(PlannerException):
     """Raised when the start pose is outside the costmap bounds."""
 
@@ -67,12 +60,12 @@ class GoalOutsideMapBounds(PlannerException):
     """Raised when the goal pose is outside the costmap bounds."""
 
 
-class TFError(PlannerException):
-    """Raised on TF lookup failures during planning."""
+class NoValidPathCouldBeFound(PlannerException):
+    """Raised when the planner cannot find any valid path."""
 
 
-class NoViableRoute(PlannerException):
-    """Raised when no viable route exists between start and goal."""
+class PlannerTimedOut(PlannerException):
+    """Raised when the planner exceeds its allocated time budget."""
 
 
 class PlannerTFError(PlannerException):

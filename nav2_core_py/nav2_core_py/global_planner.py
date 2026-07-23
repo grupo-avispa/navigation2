@@ -25,8 +25,10 @@ It mirrors the nav2_core::GlobalPlanner from the C++ implementation.
 from typing import List
 
 from geometry_msgs.msg import PoseStamped
+from nav2_costmap_2d_py import Costmap2DROS
 from nav_msgs.msg import Path
 from rclpy.lifecycle import LifecycleNode
+from tf2_ros import Buffer
 
 
 class GlobalPlanner:
@@ -46,8 +48,8 @@ class GlobalPlanner:
         self,
         parent: LifecycleNode,
         name: str,
-        tf_buffer,
-        costmap_ros,
+        tf: Buffer,
+        costmap_ros: Costmap2DROS,
     ) -> None:
         """
         Configure the planner plugin.
@@ -64,9 +66,9 @@ class GlobalPlanner:
         name : str
             Plugin instance name as declared in planner_plugins.
             Use it to namespace your parameters, e.g. f'{name}.tolerance'.
-        tf_buffer :
+        tf : Buffer
             tf2_ros.Buffer for coordinate transforms, or None if unavailable.
-        costmap_ros :
+        costmap_ros : Costmap2DROS
             nav2_costmap_2d.Costmap2DROS instance (or None / mock).
 
         """

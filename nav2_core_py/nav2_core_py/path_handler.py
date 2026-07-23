@@ -17,18 +17,17 @@
 Abstract base class for Nav2 path handler plugins.
 
 It mirrors the nav2_core::PathHandler from the C++ implementation.
-
-In the C++ interface the plan segment is delimited by a pair of iterators
-(``PathSegment``). In this Python port the segment is delimited by a pair of
-integer indices ``(closest_point, pruned_plan_end)`` into the stored plan.
 """
 
 from typing import Tuple
 
 from builtin_interfaces.msg import Time
 from geometry_msgs.msg import PoseStamped
+from nav2_costmap_2d_py import Costmap2DROS
 from nav_msgs.msg import Path
+from rclpy.impl.rcutils_logger import RcutilsLogger
 from rclpy.lifecycle import LifecycleNode
+from tf2_ros import Buffer
 
 
 class PathHandler:
@@ -45,10 +44,10 @@ class PathHandler:
     def initialize(
         self,
         parent: LifecycleNode,
-        logger,
+        logger: RcutilsLogger,
         plugin_name: str,
-        costmap_ros,
-        tf_buffer,
+        costmap_ros: Costmap2DROS,
+        tf_buffer: Buffer,
     ) -> None:
         """
         Initialize parameters.
@@ -57,13 +56,13 @@ class PathHandler:
         ----------
         parent : LifecycleNode
             The parent lifecycle node (the controller server).
-        logger :
+        logger : RcutilsLogger
             Node logging interface.
         plugin_name : str
             Plugin instance name.
-        costmap_ros :
+        costmap_ros : Costmap2DROS
             nav2_costmap_2d_py.Costmap2DROS instance.
-        tf_buffer :
+        tf_buffer : Buffer
             tf2_ros.Buffer for coordinate transforms.
 
         """

@@ -23,8 +23,11 @@ It mirrors the nav2_core::Controller from the C++ implementation.
 """
 
 from geometry_msgs.msg import PoseStamped, Twist, TwistStamped
+from nav2_core_py.goal_checker import GoalChecker
+from nav2_costmap_2d_py import Costmap2DROS
 from nav_msgs.msg import Path
 from rclpy.lifecycle import LifecycleNode
+from tf2_ros import Buffer
 
 
 class Controller:
@@ -44,8 +47,8 @@ class Controller:
         self,
         parent: LifecycleNode,
         name: str,
-        tf_buffer,
-        costmap_ros,
+        tf_buffer: Buffer,
+        costmap_ros: Costmap2DROS,
     ) -> None:
         """
         Configure the controller plugin.
@@ -98,7 +101,7 @@ class Controller:
         self,
         pose: PoseStamped,
         velocity: Twist,
-        goal_checker,
+        goal_checker: GoalChecker,
         transformed_global_plan: Path,
         global_goal: PoseStamped,
     ) -> TwistStamped:
@@ -113,7 +116,7 @@ class Controller:
             Current robot pose.
         velocity : Twist
             Current robot velocity.
-        goal_checker :
+        goal_checker : GoalChecker
             The current goal checker the task is utilizing.
         transformed_global_plan : Path
             The global plan after being processed by the path handler.

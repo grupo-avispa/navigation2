@@ -22,6 +22,7 @@ It mirrors the nav2_core::GoalChecker from the C++ implementation.
 from typing import Tuple
 
 from geometry_msgs.msg import Pose, Twist
+from nav2_costmap_2d_py import Costmap2DROS
 from nav_msgs.msg import Path
 from rclpy.lifecycle import LifecycleNode
 
@@ -41,7 +42,7 @@ class GoalChecker:
         self,
         parent: LifecycleNode,
         plugin_name: str,
-        costmap_ros,
+        costmap_ros: Costmap2DROS,
     ) -> None:
         """
         Initialize any parameters from the node.
@@ -52,7 +53,7 @@ class GoalChecker:
             The parent lifecycle node (the controller server).
         plugin_name : str
             Plugin instance name.
-        costmap_ros :
+        costmap_ros : Costmap2DROS
             nav2_costmap_2d_py.Costmap2DROS instance.
 
         """

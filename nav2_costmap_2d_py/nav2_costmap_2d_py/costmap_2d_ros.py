@@ -153,6 +153,7 @@ class Costmap2DROS(LifecycleNode):
         self.declare_parameter('trinary_costmap', True)
         self.declare_parameter('unknown_cost_value', 255)
         self.declare_parameter('update_frequency', 5.0)
+        # TODO(ajtudela): Add inscribed_obstacle_cost_value as in C++
         self.declare_parameter('use_maximum', False)
         self.declare_parameter('subscribe_to_stamped_footprint', False)
 
@@ -181,6 +182,7 @@ class Costmap2DROS(LifecycleNode):
         )
 
         # Parameters cache (filled in _get_parameters)
+        # TODO(ajtudela): Initialize as 0 as in C++
         self._global_frame = 'map'
         self._robot_base_frame = 'base_link'
         self._resolution = 0.05
@@ -240,6 +242,8 @@ class Costmap2DROS(LifecycleNode):
             self.get_logger().error(f'Failed to configure costmap! {e}')
             return TransitionCallbackReturn.FAILURE
 
+        # TODO(ajtudela): Create callback group as in C++ version
+
         # Discover Python plugins via entry_points
         self._plugin_provider.discover(self)
 
@@ -269,6 +273,7 @@ class Costmap2DROS(LifecycleNode):
         # tf2_ros::TransformListener. use_global_arguments=False keeps it from
         # inheriting the parent's relative '/tf:=tf' remap; we apply the costmap's
         # own /tf remaps explicitly instead.
+        # TODO(ajtudela): Is this necessary? Check CreateTimerROS
         self._tf_buffer = Buffer()
         self._tf_listener_node = rclpy.create_node(
             f'{self._name}_tf_listener',
@@ -376,13 +381,11 @@ class Costmap2DROS(LifecycleNode):
 
         # ----- Footprint -----
         if self._use_radius:
-            self.set_robot_footprint(
-                make_footprint_from_radius(self._robot_radius)
-            )
+            self.set_robot_footprint(make_footprint_from_radius(self._robot_radius))
         else:
-            fp = make_footprint_from_string(self._footprint_str)
-            if fp:
-                self.set_robot_footprint(fp)
+            new_footprint = make_footprint_from_string(self._footprint_str)
+            if new_footprint:
+                self.set_robot_footprint(new_footprint)
             else:
                 self.get_logger().error(
                     f'Invalid footprint string: "{self._footprint_str}", '
@@ -571,6 +574,7 @@ class Costmap2DROS(LifecycleNode):
         """Read all ROS2 parameters into member variables."""
         self.get_logger().debug('getParameters')
 
+        # TODO(ajtudela): Use  declare_or_get_parameter as in C++
         self._always_send_full = self.get_parameter('always_send_full_costmap').value
         self._map_vis_z = self.get_parameter('map_vis_z').value
         self._footprint_str = self.get_parameter('footprint').value

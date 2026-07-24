@@ -711,7 +711,7 @@ class Costmap2DROS(LifecycleNode):
 
             if not self._stopped:
                 try:
-                    self._update_map()
+                    self.update_map()
                 except Exception:  # noqa: BLE001
                     self.get_logger().error(
                         f'Costmap update_map() failed:\n{traceback.format_exc()}',

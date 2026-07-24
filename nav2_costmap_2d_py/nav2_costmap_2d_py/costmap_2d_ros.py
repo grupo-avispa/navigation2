@@ -404,7 +404,7 @@ class Costmap2DROS(LifecycleNode):
             self._get_costs_callback,
         )
 
-        self.get_logger().info('Costmap configured successfully')
+        # TODO(ajtudela): Add executor and executor thread as in C++ version
         return TransitionCallbackReturn.SUCCESS
 
     def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
@@ -423,6 +423,8 @@ class Costmap2DROS(LifecycleNode):
 
         """
         self.get_logger().info('Activating')
+
+        # TODO(ajtudela): Review on_activate on costmap_2d_ros.cpp
 
         # Wait for TF
         self.get_logger().info('Checking transform')
@@ -456,6 +458,7 @@ class Costmap2DROS(LifecycleNode):
 
         # Activate publishers
         self._costmap_publisher.on_activate()
+        # TODO(ajtudela): Add footprint publisher
         for pub in self._layer_publishers:
             pub.on_activate()
 
@@ -470,7 +473,7 @@ class Costmap2DROS(LifecycleNode):
         )
         self._map_update_thread.start()
 
-        self._start()   # calls plugin.activate() and sets stopped_ = False
+        self.start()   # calls plugin.activate() and sets stopped_ = False
 
         # Dynamic parameter callback
         self._dyn_params_handler = self.add_on_set_parameters_callback(  # type: ignore
@@ -500,13 +503,15 @@ class Costmap2DROS(LifecycleNode):
             self.remove_on_set_parameters_callback(self._dyn_params_handler)
             self._dyn_params_handler = None
 
-        self._stop()
+        self.stop()
 
         # Stop update thread
         self._map_update_thread_shutdown = True
         if self._map_update_thread and self._map_update_thread.is_alive():
             self._map_update_thread.join(timeout=5.0)
         self._map_update_thread = None
+
+        # TODO(ajtudela): Deactivate footprint publisher
 
         if self._costmap_publisher:
             self._costmap_publisher.on_deactivate()
@@ -598,10 +603,10 @@ class Costmap2DROS(LifecycleNode):
         self._subscribe_to_stamped_footprint = self.get_parameter(
             'subscribe_to_stamped_footprint').value
 
-        # Declare default plugin.plugin params if using defaults
+        # 1. All plugins must have 'plugin' param defined in their namespace
+        # to define the plugin type
         if self._plugin_names == self.DEFAULT_PLUGIN_NAMES:
-            for pname, ptype in zip(self.DEFAULT_PLUGIN_NAMES,
-                                    self.DEFAULT_PLUGIN_TYPES):
+            for pname, ptype in zip(self.DEFAULT_PLUGIN_NAMES, self.DEFAULT_PLUGIN_TYPES):
                 param = f'{pname}.plugin'
                 if not self.has_parameter(param):
                     self.declare_parameter(param, ptype)
@@ -614,17 +619,33 @@ class Costmap2DROS(LifecycleNode):
             self._get_plugin_type_param(n) for n in self._filter_names
         ]
 
-        # Footprint mode
+        # TODO(ajtudela): Add map frequency check as in c++ version
+        # 2. The map publish frequency cannot be 0 (to avoid a divide-by-zero)
+
+        # 3. If the footprint has been specified, it must be in the correct format
         self._use_radius = True
         if self._footprint_str and self._footprint_str not in ('', '[]'):
+            # Footprint parameter has been specified, try to convert it
             if make_footprint_from_string(self._footprint_str):
                 self._use_radius = False
+            else:
+                self.get_logger().error(
+                    f'The footprint parameter is invalid: {self._footprint_str} '
+                    f'using radius ({self._robot_radius}) instead'
+                )
 
-        # Validate map dimensions
+        # 4. The width, height, and resolution of map cannot be negative or 0
+        # (to avoid abnormal memory usage)
         if self._map_width_meters <= 0:
-            self.get_logger().error('Map width must be positive')
+            self.get_logger().error(
+                'You try to set width of map to be negative or zero,'
+                " this isn't allowed, please give a positive value."
+            )
         if self._map_height_meters <= 0:
-            self.get_logger().error('Map height must be positive')
+            self.get_logger().error(
+                'You try to set height of map to be negative or zero,'
+                " this isn't allowed, please give a positive value."
+            )
 
     def _get_plugin_type_param(self, plugin_name: str) -> str:
         """
@@ -676,6 +697,7 @@ class Costmap2DROS(LifecycleNode):
             return
 
         self.get_logger().debug('Entering update loop')
+        # TODO(ajtudela): Create Rate class as c++ version
         period = 1.0 / frequency
         last_publish = time.monotonic()
         publish_period = (
@@ -683,6 +705,8 @@ class Costmap2DROS(LifecycleNode):
         )
 
         while rclpy.ok() and not self._map_update_thread_shutdown:
+            # TODO(ajtudela): Create ExecutionTimer class as c++ version
+            # TODO(ajtudela): All auxiliary classes add to new nav2_util_py package
             start = time.monotonic()
 
             if not self._stopped:
@@ -693,6 +717,8 @@ class Costmap2DROS(LifecycleNode):
                         f'Costmap update_map() failed:\n{traceback.format_exc()}',
                         throttle_duration_sec=2.0,
                     )
+
+                # TODO(ajtudela): Get bounds, update bounds, etc from c++ version
 
                 # Publish at publish_frequency
                 now = time.monotonic()
@@ -720,7 +746,7 @@ class Costmap2DROS(LifecycleNode):
                     f'Actual rate: {1.0 / max(elapsed, 1e-9):.4f} Hz.'
                 )
 
-    def _update_map(self) -> None:
+    def update_map(self) -> None:
         """Update the map with the layered costmap / plugins (single update step)."""
         if self._stop_updates or self._layered_costmap is None:
             return
@@ -735,6 +761,9 @@ class Costmap2DROS(LifecycleNode):
 
         self._layered_costmap.update_map(x, y, yaw)
 
+        # TODO(ajtudela): Transform footprint and publish here as c++ version
+
+        # TODO(ajtudela): This isn't going here. Remove
         if self._costmap_publisher is not None:
             x0, y0, xn, yn = self._layered_costmap.get_updated_bounds()
             self._costmap_publisher.update_bounds(x0, xn, y0, yn)
@@ -743,7 +772,7 @@ class Costmap2DROS(LifecycleNode):
     # Start / Stop helpers
     # ------------------------------------------------------------------
 
-    def _start(self) -> None:
+    def start(self) -> None:
         """
         Start costmap updates, activating all layer plugins and filters.
 
@@ -757,7 +786,11 @@ class Costmap2DROS(LifecycleNode):
                 f.activate()
             self._stopped = False
 
-    def _stop(self) -> None:
+        self._stop_updates = False
+
+        # TODO(ajtudela): Add rate and stop_updates_ as in c++ version
+
+    def stop(self) -> None:
         """Stop costmap updates, deactivating all layer plugins and filters."""
         self._stop_updates = True
         assert self._layered_costmap is not None
@@ -766,27 +799,17 @@ class Costmap2DROS(LifecycleNode):
         for f in self._layered_costmap.get_filters():
             f.deactivate()
         self._stopped = True
-        self._stop_updates = False
-
-    def start(self) -> None:
-        """Start costmap updates (public alias for the C++ ``start``)."""
-        self._start()
-
-    def stop(self) -> None:
-        """Stop costmap updates (public alias for the C++ ``stop``)."""
-        self._stop()
+        # TODO(ajtudela): Add initialized variable as in c++ version
 
     def pause(self) -> None:
         """Pause the costmap update loop without deactivating the plugins."""
+        # TODO(ajtudela): Add initialized variable as in c++ version
         self._stop_updates = True
 
     def resume(self) -> None:
         """Resume the costmap update loop after a ``pause``."""
+        # TODO(ajtudela): Add initialized variable and Rate as in c++ version
         self._stop_updates = False
-
-    def update_map(self) -> None:
-        """Run one costmap update step (public alias for the C++ ``updateMap``)."""
-        self._update_map()
 
     # ------------------------------------------------------------------
     # Footprint management
@@ -877,6 +900,7 @@ class Costmap2DROS(LifecycleNode):
             The robot pose in the global frame, or ``None`` on failure.
 
         """
+        # TODO(ajtudela): Create get_current_pose and add to nav2_util_py
         if self._tf_buffer is None:
             return None
         try:
@@ -917,6 +941,7 @@ class Costmap2DROS(LifecycleNode):
             transform failed.
 
         """
+        # TODO(ajtudela): Create transform_pose_in_target_frame and add to nav2_util_py
         if self._tf_buffer is None:
             return None
         try:
@@ -974,6 +999,8 @@ class Costmap2DROS(LifecycleNode):
             if global_ps is None:
                 costs.append(-1.0)
                 continue
+
+            # TODO(ajtudela): Add request with footprint as use_footprint
             wx = global_ps.pose.position.x
             wy = global_ps.pose.position.y
             ok, mx, my = costmap.world_to_map(wx, wy)
@@ -1063,7 +1090,7 @@ class Costmap2DROS(LifecycleNode):
                         self._origin_x,
                         self._origin_y,
                     )
-                    self._update_map()
+                    self.update_map()
 
         return result
 
@@ -1198,6 +1225,7 @@ class Costmap2DROS(LifecycleNode):
             If the timeout expires before the costmap becomes current.
 
         """
+        # TODO(ajtudela): Add rate as in c++ version
         period = 1.0 / 100.0  # 100 Hz
         waiting_start = self.get_clock().now()
         while not self.is_current():
